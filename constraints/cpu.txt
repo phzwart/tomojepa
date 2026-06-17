@@ -1,0 +1,12 @@
+# CPU-only torch build (no GPU). Works on x86_64 and aarch64 Linux, macOS, etc.
+#
+# Inference and small smoke trainings only -- full training on CPU is slow.
+#
+# Install torch FIRST, then the package:
+#     pip install -r constraints/cpu.txt
+#     pip install -e .[retrieval]
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch>=2.4,<3
+torchvision>=0.19,<1

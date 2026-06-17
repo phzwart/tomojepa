@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install CPU torch + package (with dev/analysis extras)
+        run: |
+          python -m pip install --upgrade pip
+          # CPU torch wheels so CI needs no GPU.
+          pip install -r constraints/cpu.txt
+          pip install -e ".[retrieval,analysis,dev]"
+
+      - name: Lint (ruff)
+        run: ruff check src
+
+      - name: Import smoke test
+        run: |
+          python -c "import tomojepa, tomojepa.cli, tomojepa.patchdb.cli"
+          python -c "from tomojepa.core import DINOv3ViTEncoder, TomographyDataset"
+          tomojepa --version
+          tomojepa --help >/dev/null
+          patchdb --help >/dev/null
+
+      - name: Tests (ViT-Up, CPU)
+        run: pytest
+
+  docker-cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build CPU image
+        run: |
+          docker build -f docker/Dockerfile \
+            --build-arg TORCH_CONSTRAINTS=constraints/cpu.txt \
+            -t tomojepa:cpu .
+      - name: Smoke-run CLI in image
+        run: docker run --rm tomojepa:cpu --version

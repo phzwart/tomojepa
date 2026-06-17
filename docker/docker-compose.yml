@@ -1,0 +1,58 @@
+# Compose file for tomojepa. Works with `docker compose` and `podman compose`.
+#
+# Build (pick the torch flavor with TORCH_CONSTRAINTS):
+#   TORCH_CONSTRAINTS=constraints/cuda-x86.txt docker compose -f docker/docker-compose.yml build
+#
+# Run training (mount your data + outputs):
+#   DATA_DIR=/path/to/volumes docker compose -f docker/docker-compose.yml run --rm train \
+#       train-ssl --data_dir /data --pattern 'recon_*.zarr' --epochs 15 --batch_size 8
+#
+# Start the patch-retrieval service:
+#   docker compose -f docker/docker-compose.yml up serve
+#
+# GPU access:
+#   - Docker: requires the NVIDIA Container Toolkit (the `deploy.resources` block
+#     below, or `docker run --gpus all`).
+#   - Podman: use CDI, e.g. `podman run --device nvidia.com/gpu=all ...`, or set
+#     `PODMAN_GPU` in the `devices:` list. For CPU-only, just omit GPU bits.
+
+services:
+  train:
+    image: tomojepa:${TAG:-cpu}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        TORCH_CONSTRAINTS: ${TORCH_CONSTRAINTS:-constraints/cpu.txt}
+        EXTRAS: ${EXTRAS:-retrieval}
+    volumes:
+      - ${DATA_DIR:-./data}:/data:ro
+      - ./checkpoints:/app/checkpoints
+      - ./outputs:/app/outputs
+    # GPU (Docker + NVIDIA Container Toolkit). Remove for CPU-only.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Override the command, e.g.:
+    #   docker compose run --rm train train-ssl --data_dir /data --epochs 15
+    command: ["--help"]
+
+  serve:
+    image: tomojepa:${TAG:-cpu}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        TORCH_CONSTRAINTS: ${TORCH_CONSTRAINTS:-constraints/cpu.txt}
+        EXTRAS: retrieval
+    environment:
+      PATCHDB_DB: /app/runs/patchdb/patchdb.duckdb
+    volumes:
+      - ./runs:/app/runs
+    ports:
+      - "8077:8077"
+    command: ["patchdb", "serve", "--host", "0.0.0.0", "--port", "8077"]

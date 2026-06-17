@@ -1,0 +1,102 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tomojepa"
+version = "0.1.0"
+description = "Self-supervised tomography representation learning: LeJEPA/DINOv3 pre-training, ViT-Up feature upsampling, and a FAISS+DuckDB patch-retrieval engine."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "tomojepa contributors" }]
+keywords = ["self-supervised", "tomography", "vision-transformer", "dinov3", "lejepa", "feature-upsampling", "retrieval"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+
+# NOTE: torch / torchvision are intentionally NOT pinned here. Their correct
+# build is hardware-specific (CPU, x86 CUDA, aarch64 / DGX Spark cu128). Install
+# torch first using the matching constraints file (see constraints/) or the
+# Docker images, then `pip install tomojepa[...]`.
+dependencies = [
+    "torch",
+    "torchvision",
+    "timm>=1.0",
+    "numpy>=1.24",
+    "h5py>=3.8",
+    "zarr>=2.16",
+    "tqdm>=4.65",
+    "matplotlib>=3.7",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+# Patch-retrieval engine: FAISS ANN + DuckDB store + FastAPI/MCP service.
+retrieval = [
+    "faiss-cpu>=1.8",
+    "duckdb>=1.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+    "mcp>=1.0",
+]
+# Weights & Biases experiment logging (opt-in via --wandb).
+wandb = ["wandb>=0.16"]
+# Shape / eccentricity probes and segmentation analyses (viz subpackage).
+analysis = ["scikit-image>=0.22", "scikit-learn>=1.3"]
+# Interactive Plotly Dash explorers (ViT-Up z-score tool, etc.).
+interactive = ["dash>=2.14", "plotly>=5.18"]
+# Developer tooling.
+dev = ["pytest>=7.4", "ruff>=0.4"]
+# Everything (CPU-friendly extras only; still bring your own torch build).
+all = [
+    "tomojepa[retrieval]",
+    "tomojepa[wandb]",
+    "tomojepa[analysis]",
+    "tomojepa[interactive]",
+    "tomojepa[dev]",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-org/tomojepa"
+Repository = "https://github.com/your-org/tomojepa"
+
+[project.scripts]
+tomojepa = "tomojepa.cli:app"
+# Stable standalone entry point for the patch-retrieval CLI / MCP config.
+patchdb = "tomojepa.patchdb.cli:app"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"tomojepa.patchdb" = ["schema.sql", "README.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/tomojepa/vitup/tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["runs", ".venv"]
+
+[tool.ruff.lint]
+# Focus CI on correctness (pyflakes) and core style. The compact, semicolon-heavy
+# style of the research/plotting scripts (viz/) is intentional and tolerated.
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",   # line length
+    "E701",   # multiple statements (colon)
+    "E702",   # multiple statements (semicolon)
+    "E731",   # lambda assignment
+    "E741",   # ambiguous variable name (l, I, O) -- common in math code
+    "I001",   # import sorting (kept manual; matplotlib backend set between imports)
+]

@@ -1,0 +1,29 @@
+# Virtualenv / caches / build artifacts
+.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Training artifacts -- never bake these into the image
+checkpoints*/
+outputs*/
+runs/
+wandb/
+
+# Data must be mounted at runtime, not copied in
+*.h5
+*.hdf5
+*.zarr/
+*.zip
+*.tar
+data/
+
+# VCS / editor / CI
+.git/
+.gitignore
+.github/
+.cursor/
+*.ipynb_checkpoints/

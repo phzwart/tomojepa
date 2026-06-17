@@ -1,0 +1,14 @@
+# Torch build for x86_64 machines with an NVIDIA GPU (CUDA 12.x).
+#
+# Pulls the CUDA 12.4 wheels from PyTorch's index. If your CUDA / driver stack
+# differs, pick the matching index from https://pytorch.org/get-started/ (e.g.
+# .../whl/cu121, .../whl/cu128) and adjust the URL below.
+#
+# Install torch FIRST, then the package:
+#     pip install -r constraints/cuda-x86.txt
+#     pip install -e .[retrieval]
+
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+torch>=2.4,<3
+torchvision>=0.19,<1

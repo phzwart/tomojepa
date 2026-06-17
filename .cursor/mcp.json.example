@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "patchdb": {
+      "comment": "Requires `pip install tomojepa[retrieval]` so the `patchdb` console script is on PATH. Start the service first: `patchdb serve`. Copy this file to .cursor/mcp.json and adjust PATCHDB_SERVICE_URL if needed.",
+      "command": "patchdb",
+      "args": ["mcp"],
+      "env": {
+        "PATCHDB_SERVICE_URL": "http://127.0.0.1:8077"
+      }
+    }
+  }
+}

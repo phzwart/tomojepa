@@ -1,0 +1,17 @@
+# Torch build for NVIDIA DGX Spark (GB10 / Blackwell, aarch64, sm_120/sm_121).
+#
+# These are the CUDA 12.8 aarch64 ("sbsa") wheels with Blackwell kernels. The
+# `+cu128` local versions only exist on PyTorch's index, so the extra index URL
+# is required. These wheels bundle the CUDA userspace; the host driver is used
+# at runtime.
+#
+# Install torch FIRST, then the package:
+#     pip install -r constraints/spark-cu128.txt
+#     pip install -e .[retrieval]
+#
+# NOTE: arm64 + CUDA 12.8 specific. Do not use on x86 or CPU-only machines.
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128

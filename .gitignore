@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Training artifacts
+checkpoints*/
+outputs*/
+runs/
+wandb/
+
+# Data (volumes, archives, retrieval DBs) -- never commit
+*.h5
+*.hdf5
+*.zarr
+*.zarr/
+*.zarr.zip
+*.zip
+*.tar
+*.tar.*
+*.npz
+*.npy
+*.duckdb
+*.duckdb.wal
+*.index
+data/
+
+# Model checkpoints / weights
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+
+# Images / figures (PCA maps, plots, renders) -- never commit
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.svg
+*.tif
+*.tiff
+*.pdf
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+*.swp
+.ipynb_checkpoints/
+
+# Local agent / editor config (keep the template at .cursor/mcp.json.example)
+.cursor/mcp.json
