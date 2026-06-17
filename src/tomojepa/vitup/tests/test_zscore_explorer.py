@@ -3,14 +3,18 @@ import numpy as np
 
 from tomojepa.viz.zscore_explorer import (
     apply_display_gamma,
+    combine_masks,
     extract_view,
     gamma_colorscale,
     lasso_selection,
     mask_from_lasso,
     mask_from_pixels,
+    probe_to_mask,
     reference_stats,
     rms_zscore_map,
+    score_field_map,
     similarity_map,
+    threshold_mask,
 )
 
 
@@ -107,3 +111,41 @@ def test_extract_view_variants():
     view = extract_view(rl)
     assert view == ([1, 5], [9, 2])
     assert extract_view({"hovermode": "closest"}) is None
+
+
+def test_probe_to_mask_types():
+    image = np.zeros((10, 10), dtype=np.float32)
+    image[5:8, 5:8] = 1.0
+    radius = probe_to_mask({"type": "radius", "cx": 2, "cy": 2, "radius": 1}, image)
+    assert radius[2, 2]
+    flood = probe_to_mask({"type": "mask", "cx": 6, "cy": 6, "tolerance": 0.1}, image)
+    assert flood[6, 6] and not flood[0, 0]
+    lasso = probe_to_mask(
+        {"type": "lasso", "polygon": [[1, 1], [4, 1], [4, 4], [1, 4]]}, image)
+    assert lasso[2, 2]
+
+
+def test_score_field_aggregate_vs_max():
+    rng = np.random.default_rng(1)
+    feat = rng.standard_normal((12, 12, 8)).astype(np.float32)
+    m1 = np.zeros((12, 12), dtype=bool); m1[1:4, 1:4] = True
+    m2 = np.zeros((12, 12), dtype=bool); m2[8:11, 8:11] = True
+    agg = score_field_map(feat, [m1, m2], "aggregate")
+    mx = score_field_map(feat, [m1, m2], "max")
+    assert agg.shape == (12, 12)
+    assert mx.shape == (12, 12)
+    # max combines two per-probe maps -> high near both references
+    assert mx[m1].mean() > 0.3 and mx[m2].mean() > 0.3
+    # empty input is all-zero
+    assert score_field_map(feat, [], "aggregate").sum() == 0.0
+
+
+def test_threshold_and_combine_masks():
+    score = np.array([[0.1, 0.6], [0.9, 0.3]], dtype=np.float32)
+    a = threshold_mask(score, 0.5)
+    assert a[0, 1] and a[1, 0] and not a[0, 0]
+    b = np.array([[True, False], [True, True]])
+    assert combine_masks([a, b], "AND").tolist() == [[False, False], [True, False]]
+    assert combine_masks([a, b], "OR").tolist() == [[True, True], [True, True]]
+    assert combine_masks([a, b], "XOR").tolist() == [[True, True], [False, True]]
+    assert combine_masks([], "OR") is None

@@ -5,8 +5,8 @@ representation-learning stack for microCT tomography. It covers the shared core,
 the data and **augmentation** pipeline, and the three subsystems (`ssl`,
 `vitup`, `patchdb`), plus how they connect and how training scales across GPUs.
 
-For usage/install see [`README.md`](README.md); for design background see
-[`docs/RUN_LOCAL.md`](docs/RUN_LOCAL.md).
+For usage/install see [`README.md`](README.md); for design background and common
+questions see [`docs/FAQ.md`](docs/FAQ.md) and [`docs/RUN_LOCAL.md`](docs/RUN_LOCAL.md).
 
 ---
 

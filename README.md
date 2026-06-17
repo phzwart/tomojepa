@@ -102,8 +102,9 @@ docker/      Dockerfile, compose, container docs
 docs/        RUN_LOCAL.md (design background), NEXT_MODEL_DESIGN.md
 ```
 
-More background: [`docs/RUN_LOCAL.md`](docs/RUN_LOCAL.md) (objectives, residual
-factorization, DGX Spark notes) and the patchdb
+More background: [`docs/FAQ.md`](docs/FAQ.md) (design choices — patchification,
+SIGReg, ViT-Up, augmentations), [`docs/RUN_LOCAL.md`](docs/RUN_LOCAL.md)
+(objectives, residual factorization, DGX Spark notes), and the patchdb
 [README](src/tomojepa/patchdb/README.md).
 
 ## Data format
