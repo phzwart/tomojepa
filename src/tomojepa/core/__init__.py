@@ -11,6 +11,7 @@ from .model import (
     MaskedLatentPredictor,
     encode_masked,
     foreground_tokens,
+    lejepa_projections,
     masked_mean,
 )
 from .dataset import TomographyDataset
@@ -22,6 +23,7 @@ __all__ = [
     "MaskedLatentPredictor",
     "encode_masked",
     "foreground_tokens",
+    "lejepa_projections",
     "masked_mean",
     "TomographyDataset",
     "get_augmentations",

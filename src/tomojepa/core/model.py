@@ -67,6 +67,30 @@ class DINOv3ViTEncoder(nn.Module):
         return emb, proj
 
 
+def lejepa_projections(encoder, views, grid, fg_thresh=None):
+    """Projections fed to the LeJEPA invariance + SIGReg terms.
+
+    ``views``: ``[N, V, C, H, W]``. Returns ``(emb, proj)`` where ``proj`` is
+    ``[V, N, proj_dim]``. When ``fg_thresh`` is set, each view's patch tokens
+    are mean-pooled over foreground positions (``foreground_tokens``) before
+    the projection head, so LeJEPA does not spend capacity on flat
+    holder/background patches. When ``fg_thresh`` is ``None``, delegates to
+    :meth:`DINOv3ViTEncoder.forward` (global backbone embedding).
+    """
+    if fg_thresh is None:
+        return encoder(views)
+    n, v = views.shape[:2]
+    prefix = encoder.backbone.num_prefix_tokens
+    z_list = []
+    for vi in range(v):
+        view = views[:, vi]
+        tokens = encoder.backbone.forward_features(view)[:, prefix:]   # [N, P, D]
+        fg = foreground_tokens(view, grid, fg_thresh)
+        pooled = masked_mean(tokens, fg)                               # [N, D]
+        z_list.append(encoder.proj(pooled))
+    return None, torch.stack(z_list, 0)
+
+
 def encode_masked(backbone, img, mask, mask_token):
     """Encode ``img`` after replacing masked patch embeddings with ``mask_token``.
 

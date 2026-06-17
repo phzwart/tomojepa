@@ -46,6 +46,10 @@ Everything is reachable through the unified `tomojepa` CLI (`tomojepa --help`).
 tomojepa train-ssl --data_dir /path/to/volumes --pattern 'recon_*.zarr' \
     --epochs 15 --batch_size 8
 
+# Scans with a flat sample holder / imaging frame: pool LeJEPA over foreground only
+tomojepa train-ssl --data_dir /path/to/volumes --pattern 'soild_stack.zarr' \
+    --foreground_mask --fg_std_thresh 0.05
+
 # 2) Label-free validation of the resulting checkpoints
 tomojepa validate --run_dir runs/my_run --data_dir /path/to/volumes \
     --pattern 'recon_*.zarr' --backend zarr

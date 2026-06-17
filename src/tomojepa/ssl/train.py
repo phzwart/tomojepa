@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 
 from ..core.dataset import TomographyDataset
 from ..core.model import (DINOv3ViTEncoder, SIGReg, MaskedLatentPredictor, encode_masked,
-                          foreground_tokens, masked_mean)
+                          foreground_tokens, lejepa_projections, masked_mean)
 from ..core import dist as D
 
 
@@ -87,9 +87,10 @@ def parse_args():
                         "z_local and the pooled smooth context, reinforcing the "
                         "structural conditional independence. 0 disables it.")
     p.add_argument("--foreground_mask", action="store_true",
-                   help="restrict residual pooling and the MIM target to foreground "
-                        "(sample-ROI) tokens, so capacity is not spent on the flat "
-                        "background/frame. Detected per-view from patch intensity std.")
+                   help="mean-pool patch tokens over foreground (sample-ROI) positions "
+                        "before the LeJEPA projection head, and (when MIM is on) restrict "
+                        "the MAE target / residual pool to foreground too. Excludes the "
+                        "flat holder/background from representational bandwidth.")
     p.add_argument("--fg_std_thresh", type=float, default=0.05,
                    help="per-patch intensity-std threshold for the foreground mask "
                         "(view units, ~[-1,1] after normalize)")
@@ -358,6 +359,9 @@ def main():
             print(f"GradCache: {args.accum_steps} microbatches x {args.batch_size} = "
                   f"effective batch {eff_batch} samples ({eff_batch * args.V} views) for SIGReg, "
                   f"at {args.batch_size}-sample memory", flush=True)
+        if args.foreground_mask:
+            print(f"LeJEPA: foreground-masked pooling (fg_std_thresh={args.fg_std_thresh}) "
+                  f"on {args.img_size // 16}x{args.img_size // 16} token grid", flush=True)
 
     # --- model / opt --------------------------------------------------------
     net = DINOv3ViTEncoder(proj_dim=args.proj_dim, img_size=args.img_size,
@@ -422,6 +426,12 @@ def main():
         return (foreground_tokens(view, grid, args.fg_std_thresh)
                 if args.foreground_mask else None)
 
+    def fg_thresh():
+        return args.fg_std_thresh if args.foreground_mask else None
+
+    def lejepa_forward(vs):
+        return lejepa_projections(net, vs, grid, fg_thresh())
+
     def residual_proj(vs, masks, want_indep):
         """Per-view residual embeddings -> ([V,N,proj], summed mae, summed indep)."""
         z_list, mae_acc, indep_acc = [], 0.0, 0.0
@@ -468,7 +478,7 @@ def main():
                 masks = make_masks(n, args.V)
                 proj, mae, indep = residual_proj(vs, masks, args.indep_weight > 0)
             else:
-                emb, proj = net(vs)
+                emb, proj = lejepa_forward(vs)
                 if mim is not None:
                     mae = mae_only(vs, make_masks(n, args.global_views))
             proj_global = D.all_gather_cat(proj, dim=1)        # [V, N*ws, D]
@@ -527,7 +537,7 @@ def main():
                 if args.residual_local:
                     proj, _, _ = residual_proj(vs, masks, False)
                 else:
-                    _, proj = net(vs)
+                    _, proj = lejepa_forward(vs)
                 projs.append(proj.float())
         sizes = [p.size(1) for p in projs]
         proj_all = torch.cat(projs, dim=1).detach().requires_grad_(True)   # [V, N_total, D]
@@ -560,14 +570,14 @@ def main():
                     mae_acc += float(mae_mb.detach())
                     indep_acc += float(indep_mb.detach()) if want_indep else 0.0
                 elif mim is not None:
-                    _, proj = net(vs)
+                    _, proj = lejepa_forward(vs)
                     mae_mb = mae_only(vs, masks)
                     surrogate = ((proj * g.to(proj.dtype)).sum()
                                  + (args.mim_weight * mae_scale) * mae_mb)
                     surrogate.backward()
                     mae_acc += float(mae_mb.detach())
                 else:
-                    _, proj = net(vs)
+                    _, proj = lejepa_forward(vs)
                     proj.backward(g.to(proj.dtype))
             offset += n
         D.all_reduce_grads_(reduce_params)

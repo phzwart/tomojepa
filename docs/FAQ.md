@@ -212,8 +212,8 @@ Other dynamics notes:
   characteristic-function estimate noisy. We target ≥16 samples (often via
   GradCache) even when GPU memory limits per-step batch to 4.
 - **Foreground masking** (`--foreground_mask`) prevents the flat sample holder /
-  imaging frame from dominating MIM targets and residual pooling when the slice
-  includes background.
+  imaging frame from dominating LeJEPA pooling and, when MIM/residual is on, MIM
+  targets and residual pooling when the slice includes background.
 
 For deeper discussion of shortcut learning and why MIM complements invariance,
 see [`docs/NEXT_MODEL_DESIGN.md`](NEXT_MODEL_DESIGN.md).
@@ -351,6 +351,7 @@ multi-study corpus:
 | Run | Slices | Volumes | Notes |
 |-----|--------|---------|-------|
 | `soil_residual_fg` | 1026 | 1 (`soild_stack.zarr`) | Primary real-data SSL run with MIM + residual + foreground mask |
+| `soil_baseline` | 1026 | 1 (`soild_stack.zarr`) | Pure LeJEPA A/B on same soil data (foreground-masked pooling, no MIM) |
 | `vitup_soil_1024_5ep` | 1026 | 1 | ViT-Up distillation from soil SSL ckpt, 1024px canvas |
 | `mystack_residual_fg` | 79 | 1 | Smaller dev/debug stack |
 | `val_baseline` / `val_residual` | 1024 | 1 (`upsampled_1024.zarr`) | Controlled A/B on synthetic data |
@@ -472,12 +473,12 @@ directional structure matters).
 
 ### Augmentations outside the torchvision pipeline
 
-These are applied during **MIM / residual training**, not in `augmentations.py`:
+These are applied during **LeJEPA training** (and MIM / residual when enabled), not in `augmentations.py`:
 
 | Mechanism | Flag | Purpose |
 |-----------|------|---------|
 | **Block token masking** | `--mask_ratio 0.5 --mask_blocks 4` | BEiT-style contiguous rectangular masks on the ViT token grid; forces long-range context prediction |
-| **Foreground token masking** | `--foreground_mask --fg_std_thresh 0.05` | Excludes flat sample-holder / imaging-frame patches (near-zero per-patch intensity std) from MIM targets and residual pooling |
+| **Foreground token masking** | `--foreground_mask --fg_std_thresh 0.05` | Excludes flat sample-holder / imaging-frame patches (near-zero per-patch intensity std) from LeJEPA pooling and, when MIM/residual is on, from MAE targets and residual pooling |
 
 Foreground detection ([`foreground_tokens`](../src/tomojepa/core/model.py)): the
 sample sits on a flat surround; background patches have ≈0 intensity std while
@@ -573,10 +574,11 @@ Key design choices baked into the code:
   of the `grid×grid` token lattice is covered. On a 512px / patch-16 model that
   is a 32×32 = 1024 token grid.
 
-With `--foreground_mask`, MAE targets and residual pooling restrict to **foreground
-tokens** (sample ROI detected by per-patch intensity std > `--fg_std_thresh`,
-default 0.05). This matters when the slice includes a flat imaging frame or
-holder surround.
+With `--foreground_mask`, LeJEPA invariance/SIGReg pool **foreground tokens**
+(sample ROI detected by per-patch intensity std > `--fg_std_thresh`, default
+0.05). When MIM/residual is enabled, MAE targets and residual pooling use the
+same mask. This matters when the slice includes a flat imaging frame or holder
+surround.
 
 ### All relevant flags
 
@@ -587,7 +589,7 @@ holder surround.
 | `--indep_weight W` | `0` (off) | Optional squared Frobenius norm of the cross-covariance between `z_local` and pooled `C` ([`decorr`](../src/tomojepa/core/model.py)). Requires `--residual_local`. |
 | `--mask_ratio` | `0.5` | Fraction of patch tokens masked per view. |
 | `--mask_blocks` | `4` | Number of rectangular blocks laid down per sample. Increase (or mask ratio) if your data's correlation length is large — masks must exceed local interpolation range. |
-| `--foreground_mask` | off | Restrict MAE + residual pooling to foreground tokens. Recommended for soil/plant scans with holder background. |
+| `--foreground_mask` | off | Restrict LeJEPA pooling (and MAE + residual when enabled) to foreground tokens. Recommended for soil/plant scans with holder background. |
 | `--fg_std_thresh` | `0.05` | Per-patch std threshold for foreground (in normalized view units). |
 | `--no_mim_target_norm` | norm on | Disable LayerNorm on the stop-grad MAE target `T`. Default is on. |
 
@@ -661,11 +663,18 @@ tomojepa train-ssl \
     --mask_ratio 0.5 --mask_blocks 4 \
     --batch_size 4 --accum_steps 4   # GradCache: effective batch 16 for SIGReg
 
-# Pure LeJEPA baseline (for A/B)
+# Pure LeJEPA baseline on real soil (A/B vs soil_residual_fg)
+tomojepa train-ssl \
+    --data_dir . --pattern 'soild_stack.zarr' --backend zarr \
+    --epochs 15 --batch_size 4 --accum_steps 4 \
+    --global_scale 0.7 1.0 --local_scale 0.7 1.0 \
+    --foreground_mask --fg_std_thresh 0.05
+# (no --mim_weight)
+
+# Pure LeJEPA on synthetic data (no holder background)
 tomojepa train-ssl \
     --data_dir . --pattern 'upsampled_1024.zarr' --backend zarr \
     --batch_size 4 --accum_steps 4
-# (no --mim_weight)
 
 # Additive MIM ablation (not recommended as default)
 tomojepa train-ssl ... --mim_weight 1.0
@@ -762,7 +771,7 @@ block-context pressure is theoretically motivated.
 
 | Goal | Suggested config |
 |------|------------------|
-| **Fast baseline / retrieval** | Pure LeJEPA (`mim_weight=0`). Cheaper, higher `token_effrank`, good enough for `patchdb` similarity. |
+| **Fast baseline / retrieval** | Pure LeJEPA (`mim_weight=0`). On real scans with holder background, add `--foreground_mask`. Cheaper, higher `token_effrank`, good enough for `patchdb` similarity. |
 | **Structured / factorized features** | `--mim_weight 1.0 --residual_local --indep_weight 0.01 --foreground_mask` on real scans with background. |
 | **Debugging MIM plumbing** | Same flags on synthetic data; compare `mae` curve and eigenmaps, not downstream task gains. |
 | **Evaluating fairly** | Run `validate.py` on both runs *and* inspect eigenmaps; interpret `aug_cos` cautiously for residual; use `probe_shapes` or a labeled task for downstream signal. |

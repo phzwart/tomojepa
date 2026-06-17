@@ -175,6 +175,12 @@ patch 16, `embed_dim=384`, `in_chans=1`) + a 3-layer MLP projection head
 the released-checkpoint architecture exactly. `forward(x)` takes `[N, V, C, H, W]`
 multi-view input and returns `(emb, proj)` with `proj` shaped `[V, N, proj_dim]`.
 
+**`lejepa_projections`** routes the invariance/SIGReg head. By default it
+delegates to `DINOv3ViTEncoder.forward` (global backbone embedding). With
+`--foreground_mask`, each view is mean-pooled over foreground patch tokens
+(`foreground_tokens` + `masked_mean`) before `proj`, so holder/background
+patches do not consume representational bandwidth.
+
 ### 3.2 SIGReg — collapse prevention
 
 **`SIGReg`** (Sketched Isotropic Gaussian Regularizer) replaces the teacher/EMA
@@ -217,9 +223,10 @@ When `--mim_weight > 0`, a masked-image-modeling head augments the objective:
 **Foreground masking** (`foreground_tokens`, `--foreground_mask`): the sample
 sits on a flat surround (holder/frame); near-constant background patches have
 ≈0 per-patch intensity std while textured sample patches have high std. A std
-threshold (`--fg_std_thresh`, default 0.05) restricts residual pooling and the
-MIM target to foreground tokens so capacity isn't spent on background. It falls
-back to all-foreground for fully-interior crops.
+threshold (`--fg_std_thresh`, default 0.05) restricts LeJEPA invariance/SIGReg
+pooling (via `lejepa_projections`), residual pooling, and the MIM target to
+foreground tokens so capacity isn't spent on background. It falls back to
+all-foreground for fully-interior crops.
 
 ### 3.4 Training loop (`ssl/train.py`)
 
@@ -433,7 +440,7 @@ The same engine is exposed three ways: the `patchdb` **CLI**
 ```
 src/tomojepa/
   core/
-    model.py          DINOv3ViTEncoder, SIGReg, MIM head, foreground tokens
+    model.py          DINOv3ViTEncoder, SIGReg, lejepa_projections, MIM head, foreground tokens
     dataset.py        TomographyDataset (h5/zarr, multi-view, LRU handles)
     augmentations.py  tomo / tomo2 variants, global+local multi-scale views
     dist.py           torchrun primitives (gather/reduce/average, no DDP)
