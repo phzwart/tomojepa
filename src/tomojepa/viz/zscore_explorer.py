@@ -26,6 +26,7 @@ from pathlib import Path as FsPath
 
 import numpy as np
 import plotly.graph_objects as go
+import scipy.ndimage as ndi
 import torch
 import torch.nn.functional as F
 from dash import Dash, Input, Output, Patch, State, ctx, dcc, html, no_update
@@ -56,6 +57,18 @@ def parse_args():
     p.add_argument("--backbone_res", type=int, default=512)
     p.add_argument("--upsample", type=int, default=512)
     p.add_argument("--query_chunk_size", type=int, default=32768)
+    # tiled (native-crop) inference for models trained on native windows
+    p.add_argument("--tiled", action="store_true",
+                   help="extract features by sliding a native --tile_window over "
+                        "the full-resolution slice and stitching (qlty). Use for "
+                        "models trained on native crops; ignores --backbone_res/"
+                        "--upsample.")
+    p.add_argument("--full_res", type=int, default=1024,
+                   help="full-resolution slice size used in --tiled mode")
+    p.add_argument("--tile_window", type=int, default=256, help="tile size (px)")
+    p.add_argument("--tile_step", type=int, default=192, help="tile stride (px)")
+    p.add_argument("--tile_border", type=int, default=32,
+                   help="downweighted border per tile (px)")
     p.add_argument("--probes_path", default=None,
                    help="JSON file to load/save probes + score fields")
     p.add_argument("--host", default="0.0.0.0")
@@ -66,8 +79,30 @@ def parse_args():
 
 @torch.no_grad()
 def extract_slice_features(args, device):
-    """Return grayscale image ``[H,W]`` and dense features ``[H,W,C]``."""
-    vitup, _cfg = load_vitup(args.ckpt, device)
+    """Return grayscale image ``[H,W]`` and dense features ``[H,W,C]``.
+
+    In ``--tiled`` mode the model is run on overlapping native ``tile_window``
+    crops of the full-resolution slice and stitched (qlty), matching how a
+    native-crop-trained model was trained. Otherwise the whole slice is resized
+    to ``backbone_res`` and upsampled to ``upsample``.
+    """
+    vitup, cfg = load_vitup(args.ckpt, device)
+    use_amp = device.type == "cuda"
+    if args.tiled:
+        from ..vitup.infer import tiled_upsample
+        ds = TomographyDataset(
+            data_dir=args.data_dir, dataset_key=args.dataset_key, pattern=args.pattern,
+            global_views=1, local_views=0, variant="tomo2",
+            img_size=args.full_res, is_train=False, backend=args.backend,
+        )
+        img = ds[int(args.slice_idx)][0].unsqueeze(0).to(device)     # native [1,1,R,R]
+        dense, _ = tiled_upsample(
+            vitup, cfg, img, window=args.tile_window, step=args.tile_step,
+            border=args.tile_border, chunk_size=args.query_chunk_size, amp=use_amp)
+        image = img[0, 0].float().cpu().numpy()
+        features = dense.float().cpu().numpy()
+        return image, features
+
     ds = TomographyDataset(
         data_dir=args.data_dir, dataset_key=args.dataset_key, pattern=args.pattern,
         global_views=1, local_views=0, variant="tomo2",
@@ -77,7 +112,6 @@ def extract_slice_features(args, device):
     img = ds[int(args.slice_idx)][0].unsqueeze(0).to(device)
     img_in = F.interpolate(img, size=(args.backbone_res, args.backbone_res),
                            mode="bilinear", align_corners=False)
-    use_amp = device.type == "cuda"
     with autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
         dense = vitup.upsample(img_in, args.upsample, args.upsample,
                                chunk_size=args.query_chunk_size)[0]
@@ -142,7 +176,7 @@ def probe_to_mask(probe: dict, image: np.ndarray) -> np.ndarray:
     if t == "mask":
         return flood_mask(image, int(probe["cy"]), int(probe["cx"]),
                           float(probe["tolerance"]))
-    if t == "lasso":
+    if t in ("lasso", "polygon"):
         poly = probe.get("polygon") or []
         if len(poly) >= 3:
             return mask_from_lasso(poly, h, w)
@@ -229,6 +263,48 @@ def combine_masks(masks: list[np.ndarray], op: str) -> np.ndarray | None:
         else:  # OR
             res |= m
     return res
+
+
+# --------------------------------------------------------------------------- #
+# Morphology (dusting / spot removal)
+# --------------------------------------------------------------------------- #
+MORPH_OPS = ["open", "close", "erode", "dilate"]
+
+
+def disk_struct(radius: int) -> np.ndarray:
+    """Disk-shaped structuring element of the given radius (>=1)."""
+    r = max(int(radius), 1)
+    if r == 1:
+        return ndi.generate_binary_structure(2, 1)
+    coords = np.arange(-r, r + 1)
+    xx, yy = np.meshgrid(coords, coords)
+    return (xx ** 2 + yy ** 2) <= r * r
+
+
+def apply_morphology(mask: np.ndarray, ops: list[dict]) -> np.ndarray:
+    """Apply an ordered sequence of binary morphology operators.
+
+    Each op is ``{"op": one of MORPH_OPS, "size": radius>=1, "iterations": n>=1}``.
+    - ``open``  = erosion then dilation (removes small bright specks / dust)
+    - ``close`` = dilation then erosion (fills small holes / gaps)
+    - ``erode`` / ``dilate`` = single primitive
+    """
+    out = np.asarray(mask, dtype=bool)
+    if not ops:
+        return out
+    for op in ops:
+        name = op.get("op")
+        st = disk_struct(int(op.get("size", 1)))
+        it = max(int(op.get("iterations", 1)), 1)
+        if name == "erode":
+            out = ndi.binary_erosion(out, structure=st, iterations=it)
+        elif name == "dilate":
+            out = ndi.binary_dilation(out, structure=st, iterations=it)
+        elif name == "open":
+            out = ndi.binary_opening(out, structure=st, iterations=it)
+        elif name == "close":
+            out = ndi.binary_closing(out, structure=st, iterations=it)
+    return out.astype(bool)
 
 
 # --------------------------------------------------------------------------- #
@@ -333,9 +409,27 @@ def _add_overlay(fig, mask, color, xs, ys):
     ))
 
 
+def _add_polygon_outline(fig, poly):
+    """Draw the in-progress polygon vertices + edges (click-to-add markers)."""
+    if not poly:
+        return
+    xsp = [float(p[0]) for p in poly]
+    ysp = [float(p[1]) for p in poly]
+    if len(poly) >= 3:                                   # close the loop visually
+        xsp = xsp + [xsp[0]]
+        ysp = ysp + [ysp[0]]
+    fig.add_trace(go.Scatter(
+        x=xsp, y=ysp, mode="lines+markers",
+        line=dict(color="rgba(255,230,0,0.95)", width=2),
+        marker=dict(color="rgba(255,230,0,0.98)", size=9,
+                    line=dict(color="black", width=1)),
+        hoverinfo="skip", showlegend=False,
+    ))
+
+
 def build_input_figure(image, mask, mode, title, colorscale="gray", gamma=1.0,
                        zmin=None, zmax=None, extra_mask=None,
-                       extra_color="rgba(80,160,255,0.45)") -> go.Figure:
+                       extra_color="rgba(80,160,255,0.45)", poly=None) -> go.Figure:
     h, w = image.shape
     xs, ys = list(range(w)), list(range(h))
     if zmin is None:
@@ -351,9 +445,9 @@ def build_input_figure(image, mask, mode, title, colorscale="gray", gamma=1.0,
     ))
     _add_overlay(fig, extra_mask, extra_color, xs, ys)
     _add_overlay(fig, mask, "rgba(255,80,80,0.55)", xs, ys)
-    panel_w = 520
+    _add_polygon_outline(fig, poly)
     fig.update_layout(
-        title=title, width=panel_w + 90, height=int(panel_w * h / w) + 80,
+        title=title, autosize=True,
         margin=dict(l=10, r=70, t=40, b=10),
         dragmode="lasso" if mode == "lasso" else "zoom",
         uirevision=f"input-{mode}", **_axis_layout(h, w),
@@ -381,9 +475,8 @@ def build_score_figure(field, colorscale="Viridis", gamma=1.0, zmin=0.0,
             colorbar=dict(title="score", len=0.85, x=1.02),
             hovertemplate="x=%{x}<br>y=%{y}<br>s=%{z:.3f}<extra></extra>",
         ))
-    panel_w = 520
     fig.update_layout(
-        title=title, width=panel_w + 90, height=int(panel_w * h / w) + 80,
+        title=title, autosize=True,
         margin=dict(l=10, r=70, t=40, b=10), uirevision="sim",
         **_axis_layout(h, w),
     )
@@ -392,13 +485,17 @@ def build_score_figure(field, colorscale="Viridis", gamma=1.0, zmin=0.0,
 
 _INPUT_GRAPH_CONFIG = {
     "displayModeBar": True, "scrollZoom": True, "displaylogo": False,
+    "responsive": True,
     "modeBarButtonsToAdd": ["lasso2d", "select2d"],
     "modeBarButtonsToRemove": ["autoScale2d"],
 }
 _SIM_GRAPH_CONFIG = {
     "displayModeBar": True, "scrollZoom": True, "displaylogo": False,
+    "responsive": True,
     "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
 }
+
+_GRAPH_STYLE = {"height": "85vh", "width": "100%"}
 
 
 def _cscale_options():
@@ -448,31 +545,57 @@ def build_app(image, features, slice_idx, probes_path=None) -> Dash:
                                   "Score field (none yet)")
 
     ctrl = {"marginTop": "8px"}
-    section = {"borderTop": "1px solid #ddd", "marginTop": "12px", "paddingTop": "8px"}
+    det = {"borderTop": "1px solid #ddd", "marginTop": "6px", "paddingTop": "6px"}
+    summary = {"cursor": "pointer", "fontWeight": "bold", "fontSize": "13px",
+               "outline": "none", "userSelect": "none"}
+
+    def accordion(title, children, open=False):
+        return html.Details([html.Summary(title, style=summary), *children],
+                            open=open, style=det)
 
     app.layout = html.Div([
-        html.H3(f"ViT-Up similarity explorer — slice {slice_idx}"),
+        html.H3(f"ViT-Up similarity explorer — slice {slice_idx}",
+                style={"margin": "6px 0 8px 0", "fontSize": "16px"}),
         html.Div([
+            # =============================== sidebar ===============================
             html.Div([
-                # ---- selection ----
-                html.B("Selection"),
-                dcc.Dropdown(id="mode", clearable=False, value="radius", options=[
-                    {"label": "Radius (disk, click)", "value": "radius"},
-                    {"label": "Mask (flood-fill, click)", "value": "mask"},
-                    {"label": "Lasso (draw region)", "value": "lasso"},
-                ]),
-                html.Label("Radius (px)", style=ctrl),
-                dcc.Input(id="radius-input", type="number", value=20, min=1,
-                          max=rmax, step=1, debounce=True, style={"width": "80px"}),
-                dcc.Slider(id="radius", min=1, max=rmax, step=1, value=20,
-                           marks={5: "5", 50: "50", 100: "100"}),
-                html.Label("Mask tolerance", style=ctrl),
-                dcc.Slider(id="tolerance", min=0.0001, max=0.05, step=0.0001,
-                           value=0.002, marks={0.005: "0.005", 0.02: "0.02"}),
+                accordion("Selection", [
+                    dcc.Dropdown(id="mode", clearable=False, value="radius", options=[
+                        {"label": "Radius (disk, click)", "value": "radius"},
+                        {"label": "Mask (flood-fill, click)", "value": "mask"},
+                        {"label": "Polygon (click points)", "value": "polygon"},
+                        {"label": "Lasso (draw region)", "value": "lasso"},
+                    ], style={"marginTop": "6px"}),
+                    html.Div([
+                        html.Button("Undo point", id="poly-undo", n_clicks=0,
+                                    style={"width": "49%", "marginRight": "2%"}),
+                        html.Button("Clear points", id="poly-clear", n_clicks=0,
+                                    style={"width": "49%"}),
+                    ], style={"marginTop": "6px"}),
+                    html.Div("Polygon: click to drop vertices; region updates at "
+                             "3+ points (auto-closed).",
+                             style={"fontSize": "11px", "color": "#666",
+                                    "marginTop": "4px"}),
+                    html.Label("Radius (px)", style=ctrl),
+                    dcc.Input(id="radius-input", type="number", value=20, min=1,
+                              max=rmax, step=1, debounce=True, style={"width": "80px"}),
+                    dcc.Slider(id="radius", min=1, max=rmax, step=1, value=20,
+                               marks={5: "5", 50: "50", 100: "100"}),
+                    html.Label("Mask tolerance", style=ctrl),
+                    dcc.Slider(id="tolerance", min=0.0001, max=0.05, step=0.0001,
+                               value=0.002, marks={0.005: "0.005", 0.02: "0.02"}),
+                ], open=True),
 
-                # ---- probes ----
-                html.Div([
-                    html.B("Probes"),
+                accordion("Right panel shows", [
+                    dcc.RadioItems(id="right-view", value="live", options=[
+                        {"label": "Live similarity", "value": "live"},
+                        {"label": "Score field", "value": "field"},
+                        {"label": "Field mask", "value": "fieldmask"},
+                        {"label": "Final mask", "value": "final"},
+                    ], style={"fontSize": "12px", "marginTop": "6px"}),
+                ], open=True),
+
+                accordion("Probes", [
                     dcc.Input(id="descriptor", type="text", placeholder="descriptor (optional)",
                               debounce=True, style={"width": "100%", "marginTop": "6px"}),
                     html.Button("Add current selection", id="add-probe",
@@ -482,11 +605,9 @@ def build_app(image, features, slice_idx, probes_path=None) -> Dash:
                                                    "overflowY": "auto", "fontSize": "12px"}),
                     html.Button("Remove checked probes", id="remove-probe",
                                 n_clicks=0, style={"marginTop": "4px", "width": "100%"}),
-                ], style=section),
+                ]),
 
-                # ---- score fields ----
-                html.Div([
-                    html.B("Score field (from checked probes)"),
+                accordion("Score field (from checked probes)", [
                     dcc.Input(id="field-name", type="text", placeholder="field name",
                               debounce=True, style={"width": "100%", "marginTop": "6px"}),
                     dcc.RadioItems(id="field-mode", value="aggregate", options=[
@@ -503,31 +624,44 @@ def build_app(image, features, slice_idx, probes_path=None) -> Dash:
                                marks={0: "0", 0.5: "0.5", 1: "1"}),
                     html.Button("Remove selected field", id="remove-field",
                                 n_clicks=0, style={"marginTop": "4px", "width": "100%"}),
-                ], style=section),
+                ]),
 
-                # ---- final mask ----
-                html.Div([
-                    html.B("Final mask (logical combine)"),
+                accordion("Final mask (logical combine)", [
                     dcc.Checklist(id="final-fields", options=_field_options(init_fields),
                                   value=[], style={"marginTop": "6px", "fontSize": "12px"}),
                     dcc.RadioItems(id="final-op", value="OR",
                                    options=[{"label": o, "value": o} for o in LOGICAL_OPS],
                                    inline=True, style={"fontSize": "12px"}),
-                ], style=section),
+                ]),
 
-                # ---- right view + display ----
-                html.Div([
-                    html.B("Right panel shows"),
-                    dcc.RadioItems(id="right-view", value="live", options=[
-                        {"label": "Live similarity", "value": "live"},
-                        {"label": "Score field", "value": "field"},
-                        {"label": "Field mask", "value": "fieldmask"},
-                        {"label": "Final mask", "value": "final"},
-                    ], style={"fontSize": "12px"}),
-                ], style=section),
+                accordion("Mask morphology (dusting)", [
+                    html.Div([
+                        dcc.Dropdown(id="morph-op", clearable=False, value="open",
+                                     options=[{"label": o, "value": o} for o in MORPH_OPS],
+                                     style={"width": "110px", "display": "inline-block"}),
+                        dcc.Input(id="morph-size", type="number", value=1, min=1, max=25,
+                                  step=1, style={"width": "60px", "marginLeft": "4px"}),
+                        dcc.Input(id="morph-iter", type="number", value=1, min=1, max=20,
+                                  step=1, style={"width": "60px", "marginLeft": "4px"}),
+                    ], style={"marginTop": "6px"}),
+                    html.Div("op  /  size  /  iterations",
+                             style={"fontSize": "10px", "color": "#888"}),
+                    html.Div([
+                        html.Button("Add op", id="morph-add", n_clicks=0,
+                                    style={"width": "33%"}),
+                        html.Button("Undo", id="morph-pop", n_clicks=0,
+                                    style={"width": "32%", "marginLeft": "1%"}),
+                        html.Button("Clear", id="morph-clear", n_clicks=0,
+                                    style={"width": "32%", "marginLeft": "1%"}),
+                    ], style={"marginTop": "4px"}),
+                    html.Div(id="morph-seq", style={"fontSize": "11px", "marginTop": "4px",
+                                                    "fontFamily": "monospace",
+                                                    "whiteSpace": "pre-wrap"}),
+                    html.Div("Applied to field mask & final mask.",
+                             style={"fontSize": "10px", "color": "#888"}),
+                ]),
 
-                html.Div([
-                    html.B("Tomogram display"),
+                accordion("Tomogram display", [
                     dcc.Dropdown(id="img-cscale", options=_cscale_options(),
                                  value="gray", clearable=False, style={"marginTop": "4px"}),
                     html.Label("Gamma (color only)", style=ctrl),
@@ -537,9 +671,9 @@ def build_app(image, features, slice_idx, probes_path=None) -> Dash:
                     dcc.RangeSlider(id="img-clip", min=img_lo, max=img_hi, step=img_step,
                                     value=[img_lo, img_hi], marks=None,
                                     tooltip={"placement": "bottom", "always_visible": True}),
-                ], style=section),
-                html.Div([
-                    html.B("Score display"),
+                ]),
+
+                accordion("Score display", [
                     dcc.Dropdown(id="sim-cscale", options=_cscale_options(),
                                  value="Viridis", clearable=False, style={"marginTop": "4px"}),
                     html.Label("Gamma (color only)", style=ctrl),
@@ -549,11 +683,9 @@ def build_app(image, features, slice_idx, probes_path=None) -> Dash:
                     dcc.RangeSlider(id="sim-clip", min=0.0, max=1.0, step=0.01,
                                     value=[0.0, 1.0], marks={0: "0", 1: "1"},
                                     tooltip={"placement": "bottom", "always_visible": True}),
-                ], style=section),
+                ]),
 
-                # ---- save / load ----
-                html.Div([
-                    html.B("Save / load"),
+                accordion("Save / load", [
                     dcc.Input(id="save-path", type="text",
                               value=probes_path or "probes.json",
                               style={"width": "100%", "marginTop": "6px"}),
@@ -565,25 +697,32 @@ def build_app(image, features, slice_idx, probes_path=None) -> Dash:
                     ], style={"marginTop": "4px"}),
                     html.Div(id="io-status", style={"fontSize": "11px", "color": "#666",
                                                     "marginTop": "4px"}),
-                ], style=section),
-
-                html.Div(id="stats", style={"marginTop": "12px", "fontFamily": "monospace",
-                                            "whiteSpace": "pre-wrap", "fontSize": "12px"}),
-            ], style={"width": "320px", "paddingRight": "16px", "flexShrink": 0,
+                ]),
+            ], style={"width": "300px", "paddingRight": "12px", "flexShrink": 0,
                       "maxHeight": "95vh", "overflowY": "auto"}),
+
+            # =============================== main area ===============================
             html.Div([
-                html.Div([dcc.Graph(id="input-graph", figure=init_input,
-                                    config=_INPUT_GRAPH_CONFIG)],
-                         style={"display": "inline-block", "verticalAlign": "top"}),
-                html.Div([dcc.Graph(id="sim-graph", figure=init_sim,
-                                    config=_SIM_GRAPH_CONFIG)],
-                         style={"display": "inline-block", "verticalAlign": "top"}),
-            ]),
+                html.Div(id="stats", style={
+                    "fontFamily": "monospace", "whiteSpace": "pre-wrap",
+                    "fontSize": "12px", "padding": "6px 10px", "background": "#f5f5f5",
+                    "borderRadius": "4px", "marginBottom": "6px", "minHeight": "1.4em"}),
+                html.Div([
+                    html.Div([dcc.Graph(id="input-graph", figure=init_input,
+                                        config=_INPUT_GRAPH_CONFIG, style=_GRAPH_STYLE)],
+                             style={"flex": 1, "minWidth": 0}),
+                    html.Div([dcc.Graph(id="sim-graph", figure=init_sim,
+                                        config=_SIM_GRAPH_CONFIG, style=_GRAPH_STYLE)],
+                             style={"flex": 1, "minWidth": 0}),
+                ], style={"display": "flex", "gap": "8px"}),
+            ], style={"flex": 1, "minWidth": 0}),
         ], style={"display": "flex"}),
         dcc.Store(id="click-store", data=None),
         dcc.Store(id="lasso-store", data=None),
+        dcc.Store(id="poly-store", data=None),
         dcc.Store(id="probes-store", data=init_probes),
         dcc.Store(id="fields-store", data=init_fields),
+        dcc.Store(id="morph-store", data=[]),
     ])
 
     # ---- radius sync ----
@@ -604,26 +743,45 @@ def build_app(image, features, slice_idx, probes_path=None) -> Dash:
     # ---- capture live selection ----
     @app.callback(
         Output("click-store", "data"), Output("lasso-store", "data"),
+        Output("poly-store", "data"),
         Input("input-graph", "clickData"), Input("input-graph", "selectedData"),
-        Input("mode", "value"),
+        Input("mode", "value"), Input("poly-undo", "n_clicks"),
+        Input("poly-clear", "n_clicks"),
         State("click-store", "data"), State("lasso-store", "data"),
+        State("poly-store", "data"),
         prevent_initial_call=True,
     )
-    def capture_selection(click_data, selected_data, mode, click, lasso):
+    def capture_selection(click_data, selected_data, mode, undo_n, clear_n,
+                          click, lasso, poly):
         trig = ctx.triggered[0]["prop_id"] if ctx.triggered else ""
         if trig == "mode.value":
-            return None, None
-        if trig == "input-graph.clickData" and mode != "lasso":
+            return None, None, None
+        if trig == "poly-clear.n_clicks":
+            return no_update, no_update, []
+        if trig == "poly-undo.n_clicks":
+            return no_update, no_update, (poly or [])[:-1]
+        if trig == "input-graph.clickData":
             parsed = _parse_click(click_data)
-            if parsed is not None:
-                return {"x": parsed[1], "y": parsed[0]}, None
+            if parsed is None:
+                return no_update, no_update, no_update
+            cx, cy = parsed[1], parsed[0]
+            if mode == "polygon":                       # append a vertex
+                return no_update, no_update, (poly or []) + [[float(cx), float(cy)]]
+            if mode != "lasso":                         # radius / flood
+                return {"x": cx, "y": cy}, None, no_update
         if trig == "input-graph.selectedData" and mode == "lasso":
             pts = lasso_selection(selected_data, h, w)
             if pts:
-                return None, pts
-        return no_update, no_update
+                return None, pts, no_update
+        return no_update, no_update, no_update
 
-    def _live_mask(mode, click, lasso, radius, tolerance):
+    def _live_mask(mode, click, lasso, poly, radius, tolerance):
+        if mode == "polygon":
+            n = len(poly or [])
+            if n < 3:
+                return None, f"polygon ({n} pts, need 3+)"
+            m = mask_from_lasso(poly, h, w)
+            return m, f"polygon n={int(m.sum())} ({n} pts)"
         if mode == "lasso":
             if not lasso or len(lasso) < 3:
                 return None, "lasso (draw a region)"
@@ -645,11 +803,12 @@ def build_app(image, features, slice_idx, probes_path=None) -> Dash:
         Input("add-probe", "n_clicks"), Input("remove-probe", "n_clicks"),
         State("probes-store", "data"), State("probe-list", "value"),
         State("mode", "value"), State("click-store", "data"),
-        State("lasso-store", "data"), State("radius", "value"),
+        State("lasso-store", "data"), State("poly-store", "data"),
+        State("radius", "value"),
         State("tolerance", "value"), State("descriptor", "value"),
         prevent_initial_call=True,
     )
-    def manage_probes(add_n, rm_n, probes, checked, mode, click, lasso,
+    def manage_probes(add_n, rm_n, probes, checked, mode, click, lasso, poly,
                       radius, tolerance, descriptor):
         probes = list(probes or [])
         tid = ctx.triggered_id
@@ -657,13 +816,15 @@ def build_app(image, features, slice_idx, probes_path=None) -> Dash:
             checked = set(checked or [])
             return [p for p in probes if p["id"] not in checked]
         # add
-        mask, _ = _live_mask(mode, click, lasso, radius, tolerance)
+        mask, _ = _live_mask(mode, click, lasso, poly, radius, tolerance)
         if mask is None or not mask.any():
             return no_update
         nid = (max([p["id"] for p in probes]) + 1) if probes else 1
         probe = {"id": nid, "name": f"probe {nid}", "type": mode,
                  "descriptor": (descriptor or "").strip(), "n": int(mask.sum())}
-        if mode == "lasso":
+        if mode == "polygon":
+            probe["polygon"] = list(poly or [])
+        elif mode == "lasso":
             probe["polygon"] = lasso
         else:
             probe["cx"] = int(click["x"])
@@ -707,6 +868,35 @@ def build_app(image, features, slice_idx, probes_path=None) -> Dash:
                        "probe_ids": list(checked_probes),
                        "threshold": float(threshold) if threshold is not None else 0.5})
         return fields
+
+    # ---- morphology management ----
+    @app.callback(
+        Output("morph-store", "data"),
+        Input("morph-add", "n_clicks"), Input("morph-pop", "n_clicks"),
+        Input("morph-clear", "n_clicks"),
+        State("morph-store", "data"), State("morph-op", "value"),
+        State("morph-size", "value"), State("morph-iter", "value"),
+        prevent_initial_call=True,
+    )
+    def manage_morph(add_n, pop_n, clear_n, ops, op, size, iters):
+        ops = list(ops or [])
+        tid = ctx.triggered_id
+        if tid == "morph-clear":
+            return []
+        if tid == "morph-pop":
+            return ops[:-1]
+        ops.append({"op": op or "open",
+                    "size": int(size) if size else 1,
+                    "iterations": int(iters) if iters else 1})
+        return ops
+
+    @app.callback(Output("morph-seq", "children"), Input("morph-store", "data"))
+    def _morph_seq(ops):
+        if not ops:
+            return "(no ops)"
+        return "\n".join(
+            f"{i + 1}. {o['op']} s={o.get('size', 1)} x{o.get('iterations', 1)}"
+            for i, o in enumerate(ops))
 
     # ---- option syncing ----
     @app.callback(Output("probe-list", "options"), Input("probes-store", "data"))
@@ -766,6 +956,7 @@ def build_app(image, features, slice_idx, probes_path=None) -> Dash:
         Output("input-graph", "figure"), Output("sim-graph", "figure"),
         Output("stats", "children"),
         Input("click-store", "data"), Input("lasso-store", "data"),
+        Input("poly-store", "data"),
         Input("mode", "value"), Input("radius", "value"), Input("tolerance", "value"),
         Input("img-cscale", "value"), Input("img-gamma", "value"),
         Input("img-clip", "value"), Input("sim-cscale", "value"),
@@ -773,22 +964,23 @@ def build_app(image, features, slice_idx, probes_path=None) -> Dash:
         Input("right-view", "value"), Input("field-select", "value"),
         Input("threshold", "value"), Input("final-fields", "value"),
         Input("final-op", "value"), Input("probes-store", "data"),
-        Input("fields-store", "data"),
+        Input("fields-store", "data"), Input("morph-store", "data"),
         prevent_initial_call=True,
     )
-    def render(click, lasso, mode, radius, tolerance, img_cscale, img_gamma,
+    def render(click, lasso, poly, mode, radius, tolerance, img_cscale, img_gamma,
                img_clip, sim_cscale, sim_gamma, sim_clip, right_view, field_sel,
-               threshold, final_fields, final_op, probes, fields):
+               threshold, final_fields, final_op, probes, fields, morph_ops):
         img_gamma = float(img_gamma or 1.0)
         sim_gamma = float(sim_gamma or 1.0)
         img_zmin, img_zmax = (img_clip or [img_lo, img_hi])
         sim_zmin, sim_zmax = (sim_clip or [0.0, 1.0])
         probes = probes or []
         fields = fields or []
+        morph_ops = morph_ops or []
         probe_by_id = {p["id"]: p for p in probes}
         field_by_id = {f["id"]: f for f in fields}
 
-        live_mask, live_label = _live_mask(mode, click, lasso, radius, tolerance)
+        live_mask, live_label = _live_mask(mode, click, lasso, poly, radius, tolerance)
 
         def field_masks(field):
             return [probe_to_mask(probe_by_id[pid], image)
@@ -827,11 +1019,14 @@ def build_app(image, features, slice_idx, probes_path=None) -> Dash:
                                                  f"Score: {field['name']} [{field['mode']}]")
                 else:
                     thr = float(threshold if threshold is not None else field["threshold"])
-                    bm = threshold_mask(score, thr)
+                    raw = threshold_mask(score, thr)
+                    bm = apply_morphology(raw, morph_ops)
                     extra_mask = bm
                     sim_fig = build_score_figure(bm, title=f"Mask: {field['name']} thr={thr:.2f}",
                                                  binary=True)
-                    stats_lines.append(f"field mask px: {int(bm.sum())} @thr={thr:.2f}")
+                    stats_lines.append(
+                        f"field mask px: {int(raw.sum())} -> {int(bm.sum())} "
+                        f"(morph {len(morph_ops)} ops) @thr={thr:.2f}")
         else:  # final
             masks = []
             for fid in (final_fields or []):
@@ -839,19 +1034,23 @@ def build_app(image, features, slice_idx, probes_path=None) -> Dash:
                 if f is None:
                     continue
                 masks.append(threshold_mask(field_score(f), float(f["threshold"])))
-            final = combine_masks(masks, final_op)
-            if final is None:
+            combined = combine_masks(masks, final_op)
+            if combined is None:
                 sim_fig = build_score_figure(np.zeros((h, w)), title="Final mask (none)",
                                              binary=True)
             else:
+                final = apply_morphology(combined, morph_ops)
                 extra_mask = final
                 sim_fig = build_score_figure(final, title=f"Final mask ({final_op}, "
                                              f"{len(masks)} fields)", binary=True)
-                stats_lines.append(f"final mask px: {int(final.sum())}")
+                stats_lines.append(
+                    f"final mask px: {int(combined.sum())} -> {int(final.sum())} "
+                    f"(morph {len(morph_ops)} ops)")
 
         in_fig = build_input_figure(image, live_mask, mode, f"Input — {live_label}",
                                     img_cscale, img_gamma, float(img_zmin),
-                                    float(img_zmax), extra_mask=extra_mask)
+                                    float(img_zmax), extra_mask=extra_mask,
+                                    poly=(poly if mode == "polygon" else None))
         return in_fig, sim_fig, "\n".join(stats_lines)
 
     # ---- coupled zoom/pan ----

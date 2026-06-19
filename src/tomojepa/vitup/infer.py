@@ -53,6 +53,18 @@ def parse_args():
                    help="number of PCA components to visualize (first 3 form RGB)")
     p.add_argument("--comp_cols", type=int, default=0,
                    help="columns in the component grid (0 = auto: 10 if n_comp>24 else 6)")
+    # tiled (native-crop) inference: run the model on overlapping native windows
+    # and stitch (qlty), instead of feeding the whole resized slice.
+    p.add_argument("--tiled", action="store_true",
+                   help="tiled inference: slide a native --tile_window over the "
+                        "full-resolution slice and stitch (for models trained on "
+                        "native crops). Ignores --backbone_res/--upsample.")
+    p.add_argument("--full_res", type=int, default=1024,
+                   help="full-resolution slice size used in --tiled mode")
+    p.add_argument("--tile_window", type=int, default=256, help="tile size (px)")
+    p.add_argument("--tile_step", type=int, default=192, help="tile stride (px)")
+    p.add_argument("--tile_border", type=int, default=32,
+                   help="downweighted border per tile (px)")
     p.add_argument("--out_dir", default="runs/vitup_soil_1024/out")
     p.add_argument("--seed", type=int, default=0)
     return p.parse_args()
@@ -124,6 +136,69 @@ def pca_maps(dense, low, n_comp=18):
     return dn, ln, comps
 
 
+@torch.no_grad()
+def _tile_dense_low(vitup, cfg, tile, out_h, out_w, chunk_size, want_low):
+    """Dense ViT-Up map (and optional last-layer backbone grid) for one tile."""
+    ctx = vitup.encode_image(tile)
+    coords = vitup.dense_grid_coords(ctx, out_h, out_w, device=tile.device).unsqueeze(0)
+    o_last = vitup.query(ctx, coords, stages="last", chunk_size=chunk_size)[-1]
+    dense = o_last.reshape(out_h, out_w, vitup.output_dim)
+    low = None
+    if want_low:
+        low = ctx.hidden[cfg.layer_indices[-1]][0].permute(1, 2, 0)   # [g,g,C]
+    return dense, low
+
+
+@torch.no_grad()
+def tiled_upsample(vitup, cfg, img, window=256, step=192, border=32,
+                   border_weight=0.1, chunk_size=4096, amp=True, want_low=False):
+    """Dense ViT-Up features over a large image via overlapping native tiles.
+
+    The model is run on each ``window``-sized native crop (its training scale),
+    and the per-tile dense maps are stitched with qlty's border-downweighted
+    weighted average -- avoiding the large position-embedding extrapolation that
+    feeding the whole image would require.
+
+    Args:
+        img: ``[1, Cin, H, W]`` tensor on the target device.
+        window/step/border: tile geometry in pixels (``step < window`` overlaps).
+        want_low: also return the stitched last-layer backbone grid (token res).
+    Returns ``(dense [H,W,Cf], low [H/p,W/p,C] | None)``.
+    """
+    from qlty import NCYXQuilt
+
+    device = img.device
+    _, _, H, W = img.shape
+    p = vitup.adapter.p
+    quilt = NCYXQuilt(Y=H, X=W, window=(window, window), step=(step, step),
+                      border=(border, border), border_weight=border_weight)
+    tiles = quilt.unstitch(img.detach().cpu())                 # [M,Cin,window,window]
+    aenabled = amp and device.type == "cuda"
+
+    dense_tiles, low_tiles = [], []
+    for i in range(tiles.shape[0]):
+        t = tiles[i:i + 1].to(device)
+        with autocast(device.type, dtype=torch.bfloat16, enabled=aenabled):
+            d, lo = _tile_dense_low(vitup, cfg, t, window, window, chunk_size, want_low)
+        dense_tiles.append(d.float().permute(2, 0, 1).cpu())   # [Cf,window,window]
+        if want_low:
+            low_tiles.append(lo.float().permute(2, 0, 1).cpu())
+
+    dense_full, _ = quilt.stitch(torch.stack(dense_tiles))     # [1,Cf,H,W]
+    dense_full = dense_full[0].permute(1, 2, 0).contiguous()   # [H,W,Cf]
+    if not want_low:
+        return dense_full, None
+
+    # Stitch the low-res backbone grids on the matching token-scale quilt.
+    g = window // p
+    lquilt = NCYXQuilt(Y=H // p, X=W // p, window=(g, g),
+                       step=(step // p, step // p),
+                       border=(max(1, border // p), max(1, border // p)),
+                       border_weight=border_weight)
+    low_full, _ = lquilt.stitch(torch.stack(low_tiles))        # [1,C,H/p,W/p]
+    return dense_full, low_full[0].permute(1, 2, 0).contiguous()
+
+
 def _component_grid(n_comp, comp_cols=0):
     """Return (n_rows, n_cols) for the eigen component panel."""
     cols = comp_cols if comp_cols > 0 else (10 if n_comp > 24 else 6)
@@ -141,12 +216,15 @@ def main():
 
     vitup, cfg = load_vitup(args.ckpt, device)
 
+    ds_img_size = args.full_res if args.tiled else max(args.backbone_res, args.upsample)
     ds = TomographyDataset(
         data_dir=args.data_dir, dataset_key=args.dataset_key, pattern=args.pattern,
         global_views=1, local_views=0, variant="tomo2",
-        img_size=max(args.backbone_res, args.upsample), is_train=False,
-        backend=args.backend,
+        img_size=ds_img_size, is_train=False, backend=args.backend,
     )
+    if args.tiled:
+        print(f"Tiled inference: {args.full_res}px slice, window={args.tile_window} "
+              f"step={args.tile_step} border={args.tile_border}", flush=True)
     rng = np.random.default_rng(args.seed)
     if args.slices is not None:
         idxs = np.array(args.slices, dtype=int)
@@ -157,18 +235,25 @@ def main():
 
     for i, idx in enumerate(idxs):
         img = ds[int(idx)][0].unsqueeze(0).to(device)              # [1,1,S,S]
-        img_in = F.interpolate(img, size=(args.backbone_res, args.backbone_res),
-                               mode="bilinear", align_corners=False)
         use_amp = device.type == "cuda"
-        with autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
-            ctx = vitup.encode_image(img_in)
-            low = ctx.hidden[cfg.layer_indices[-1]][0].permute(1, 2, 0)  # [h,w,C]
-            dense = vitup.upsample(img_in, args.upsample, args.upsample,
-                                   chunk_size=args.query_chunk_size)[0]  # [U,U,C]
+        if args.tiled:
+            dense, low = tiled_upsample(
+                vitup, cfg, img, window=args.tile_window, step=args.tile_step,
+                border=args.tile_border, chunk_size=args.query_chunk_size,
+                amp=use_amp, want_low=True)
+            orig = img[0, 0].float().cpu().numpy()
+        else:
+            img_in = F.interpolate(img, size=(args.backbone_res, args.backbone_res),
+                                   mode="bilinear", align_corners=False)
+            with autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
+                ctx = vitup.encode_image(img_in)
+                low = ctx.hidden[cfg.layer_indices[-1]][0].permute(1, 2, 0)  # [h,w,C]
+                dense = vitup.upsample(img_in, args.upsample, args.upsample,
+                                       chunk_size=args.query_chunk_size)[0]  # [U,U,C]
+            orig = img_in[0, 0].cpu().numpy()
         low, dense = low.float(), dense.float()
 
         dense_rgb, low_rgb, comps = pca_maps(dense, low, n_comp=args.n_comp)
-        orig = img_in[0, 0].cpu().numpy()
         h = low.shape[0]
 
         comp_rows, comp_cols = _component_grid(args.n_comp, args.comp_cols)
@@ -182,14 +267,18 @@ def main():
             hspace=0.15, wspace=0.06,
         )
 
+        in_res = orig.shape[0]
+        out_res = dense_rgb.shape[0]
+        in_lbl = (f"{in_res}px, tiled {args.tile_window}/{args.tile_step}"
+                  if args.tiled else f"{args.backbone_res}px in")
         t1, t2 = comp_cols // 3, 2 * (comp_cols // 3)
         ax = fig.add_subplot(gs[0, 0:t1]); ax.imshow(orig, cmap="gray")
-        ax.set_title(f"slice {int(idx)}  ({args.backbone_res}px in)"); ax.axis("off")
+        ax.set_title(f"slice {int(idx)}  ({in_lbl})"); ax.axis("off")
         ax = fig.add_subplot(gs[0, t1:t2]); ax.imshow(low_rgb)
         ax.set_title(f"backbone layer {cfg.layer_indices[-1]} PCA "
                      f"({h}x{h} -> bilinear)"); ax.axis("off")
         ax = fig.add_subplot(gs[0, t2:comp_cols]); ax.imshow(dense_rgb)
-        ax.set_title(f"ViT-Up PCA RGB ({args.upsample}x{args.upsample})"); ax.axis("off")
+        ax.set_title(f"ViT-Up PCA RGB ({out_res}x{out_res})"); ax.axis("off")
 
         for c, comp in enumerate(comps):
             ax = fig.add_subplot(gs[1 + c // comp_cols, c % comp_cols])

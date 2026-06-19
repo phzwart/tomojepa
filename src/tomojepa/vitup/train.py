@@ -39,7 +39,7 @@ from .config import add_argparse_args, from_args
 from .backbone_adapter import build_backbone, load_backbone_state, BackboneAdapter
 from .model import ViTUp
 from .distill import MultiScaleTeacher, DistillEngine
-from .infer import pca_maps
+from .infer import pca_maps, tiled_upsample
 
 
 def parse_args():
@@ -50,6 +50,10 @@ def parse_args():
     p.add_argument("--backend", choices=["auto", "h5", "zarr"], default="auto")
     p.add_argument("--dataset_key", default="reconstruction")
     p.add_argument("--augment", choices=["tomo", "tomo2"], default="tomo2")
+    p.add_argument("--crop_mode", choices=["resized", "native"], default="resized",
+                   help="'resized' = RandomResizedCrop (area-scale crop rescaled to "
+                        "--img_size); 'native' = RandomCrop (true full-resolution "
+                        "--img_size window cut from the slice, no rescaling).")
     p.add_argument("--img_size", type=int, default=512, help="source training-image size")
     p.add_argument("--num_workers", type=int, default=8)
     # teacher / student
@@ -66,9 +70,13 @@ def parse_args():
     p.add_argument("--pca_samples", type=int, default=2,
                    help="number of fixed slices in the PCA probe")
     p.add_argument("--pca_res", type=int, default=512,
-                   help="backbone + ViT-Up output resolution for the probe")
+                   help="backbone + ViT-Up output resolution for the probe "
+                        "(resized mode only)")
     p.add_argument("--pca_chunk", type=int, default=32768,
                    help="query chunk size for the probe upsample")
+    p.add_argument("--pca_full_res", type=int, default=1024,
+                   help="in native crop_mode, the full-resolution slice the probe "
+                        "tiles over (window=--img_size) instead of resizing")
     p.add_argument("--amp_dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--wandb", action="store_true")
@@ -103,11 +111,20 @@ def maybe_resume(ckpt_dir, engine, opt, sched, device):
 
 
 def build_pca_probe(args, device):
-    """Load a fixed set of slices (deterministic) for the recurring PCA probe."""
+    """Load a fixed set of slices (deterministic) for the recurring PCA probe.
+
+    In ``native`` crop_mode the probe must match how the model is trained/used:
+    the full-resolution slice is kept intact and tiled (window ``--img_size``)
+    rather than being resized down -- otherwise content sits at the wrong scale
+    and features look broken. In ``resized`` mode the slice is resized to
+    ``--pca_res`` as before.
+    """
+    native = args.crop_mode == "native"
+    img_size = args.pca_full_res if native else args.pca_res
     ds = TomographyDataset(
         data_dir=args.data_dir, dataset_key=args.dataset_key, pattern=args.pattern,
-        global_views=1, local_views=0, variant="tomo2", img_size=args.pca_res,
-        is_train=False, backend=args.backend,
+        global_views=1, local_views=0, variant="tomo2", img_size=img_size,
+        is_train=False, backend=args.backend, crop_mode=args.crop_mode,
     )
     rng = np.random.default_rng(args.seed)
     idxs = sorted(rng.choice(len(ds), size=min(args.pca_samples, len(ds)),
@@ -115,30 +132,44 @@ def build_pca_probe(args, device):
     imgs = []
     for idx in idxs:
         img = ds[int(idx)][0].unsqueeze(0)                      # [1,1,S,S]
-        img = F.interpolate(img, size=(args.pca_res, args.pca_res),
-                            mode="bilinear", align_corners=False)
+        if not native:
+            img = F.interpolate(img, size=(args.pca_res, args.pca_res),
+                                mode="bilinear", align_corners=False)
         imgs.append(img.to(device))
-    return idxs, imgs
+    tile_cfg = None
+    if native:
+        w = args.img_size
+        tile_cfg = dict(window=w, step=max(1, 3 * w // 4), border=max(1, w // 8))
+    return idxs, imgs, tile_cfg
 
 
 @torch.no_grad()
 def run_pca_probe(vitup, cfg, probe, step, out_dir, res, chunk):
     """Render a compact [orig | backbone-bilinear | ViT-Up] PCA strip per slice."""
-    idxs, imgs = probe
+    idxs, imgs, tile_cfg = probe
     was_training = vitup.training
     vitup.eval()
     n = len(imgs)
     fig, axes = plt.subplots(n, 3, figsize=(12, 4 * n + 0.5), squeeze=False)
     for r, (idx, img) in enumerate(zip(idxs, imgs)):
-        with autocast(img.device.type, dtype=torch.bfloat16, enabled=img.is_cuda):
-            ctx = vitup.encode_image(img)
-            low = ctx.hidden[cfg.layer_indices[-1]][0].permute(1, 2, 0)
-            dense = vitup.upsample(img, res, res, chunk_size=chunk)[0]
-        dense_rgb, low_rgb, _ = pca_maps(dense.float(), low.float(), n_comp=3)
+        if tile_cfg is not None:
+            dense, low = tiled_upsample(
+                vitup, cfg, img, window=tile_cfg["window"], step=tile_cfg["step"],
+                border=tile_cfg["border"], chunk_size=chunk, amp=img.is_cuda,
+                want_low=True)
+            dense, low = dense.float(), low.float()
+        else:
+            with autocast(img.device.type, dtype=torch.bfloat16, enabled=img.is_cuda):
+                ctx = vitup.encode_image(img)
+                low = ctx.hidden[cfg.layer_indices[-1]][0].permute(1, 2, 0)
+                dense = vitup.upsample(img, res, res, chunk_size=chunk)[0]
+            dense, low = dense.float(), low.float()
+        dense_rgb, low_rgb, _ = pca_maps(dense, low, n_comp=3)
         h = low.shape[0]
+        out_res = dense.shape[0]
         panels = [(img[0, 0].cpu().numpy(), f"slice {idx}", "gray"),
                   (low_rgb, f"backbone L{cfg.layer_indices[-1]} ({h}x{h}->bilinear)", None),
-                  (dense_rgb, f"ViT-Up ({res}x{res})", None)]
+                  (dense_rgb, f"ViT-Up ({out_res}x{out_res})", None)]
         for c, (im, title, cmap) in enumerate(panels):
             ax = axes[r][c]
             ax.imshow(im, cmap=cmap)
@@ -181,7 +212,7 @@ def main():
     train_ds = TomographyDataset(
         data_dir=args.data_dir, dataset_key=args.dataset_key, pattern=args.pattern,
         global_views=1, local_views=0, variant=args.augment, img_size=args.img_size,
-        is_train=True, backend=args.backend,
+        is_train=True, backend=args.backend, crop_mode=args.crop_mode,
     )
     sampler = (DistributedSampler(train_ds, shuffle=True, drop_last=True)
                if D.is_distributed() else None)

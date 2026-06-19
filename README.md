@@ -8,6 +8,10 @@ loader:
 - **`tomojepa.ssl`** — LeJEPA / DINOv3 self-supervised pre-training (SIGReg
   collapse prevention, optional masked-latent-prediction + residual
   factorization) and label-free intrinsic validation.
+- **`tomojepa.swinjepa`** — Swin multi-scale latent-JEPA pre-training: a masked
+  student predicts the same backbone's full-image stage latents at every pyramid
+  level, with per-stage SIGReg as the only anti-collapse term (no EMA teacher, no
+  pixel decoder).
 - **`tomojepa.vitup`** — [ViT-Up](https://arxiv.org/abs/2606.14024) faithful
   feature upsampling: multi-scale distillation training + dense-feature inference.
 - **`tomojepa.patchdb`** — FAISS + DuckDB cross-image patch-retrieval engine with
@@ -49,6 +53,10 @@ tomojepa train-ssl --data_dir /path/to/volumes --pattern 'recon_*.zarr' \
 # Scans with a flat sample holder / imaging frame: pool LeJEPA over foreground only
 tomojepa train-ssl --data_dir /path/to/volumes --pattern 'soild_stack.zarr' \
     --foreground_mask --fg_std_thresh 0.05
+
+# Alternative: Swin multi-scale latent-JEPA (hierarchical features for ViT-Up)
+tomojepa train-swinjepa --data_dir /path/to/volumes --pattern 'soild_stack.zarr' \
+    --backend zarr --img_size 224 --batch_size 16 --epochs 100 --beta_sig 0.05
 
 # 2) Label-free validation of the resulting checkpoints
 tomojepa validate --run_dir runs/my_run --data_dir /path/to/volumes \
@@ -97,6 +105,7 @@ gradients manually instead of wrapping in `DistributedDataParallel`.
 src/tomojepa/
   core/      model, dataset, augmentations, dist (shared by all subsystems)
   ssl/       train.py (LeJEPA/DINOv3) + validate.py
+  swinjepa/  Swin multi-scale latent-JEPA (backbone, mask, predictor, sigreg, tests)
   vitup/     ViT-Up model, train.py, infer.py, tests/
   patchdb/   FAISS+DuckDB retrieval engine (CLI / service / MCP)
   viz/       PCA maps, A/B comparison, shape probes, legacy token-DB tools

@@ -6,7 +6,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .augmentations import get_augmentations
+from .augmentations import (get_augmentations, build_slice_fg_mask,
+                            wrap_image_mask, unwrap_image_mask)
 
 
 def _resolve_array(root, key):
@@ -40,14 +41,18 @@ class TomographyDataset(Dataset):
                  global_views=2, local_views=2,
                  global_scale=(0.4, 1.0), local_scale=(0.1, 0.4),
                  variant="tomo2", img_size=512, is_train=True, max_open_files=64,
-                 backend="auto"):
+                 backend="auto", crop_mode="resized",
+                 foreground_mask=False, fg_std_thresh=0.05, fg_key=None):
         self.data_dir = data_dir
         self.dataset_key = dataset_key
+        self.fg_key = fg_key
         self.global_views = global_views
         self.local_views = local_views
         self.V = global_views + local_views
         self.is_train = is_train
         self.max_open_files = max_open_files
+        self.foreground_mask = foreground_mask
+        self.fg_std_thresh = fg_std_thresh
         if backend not in ("auto", "h5", "zarr"):
             raise ValueError(f"unknown backend: {backend!r}")
         self.backend = backend
@@ -85,6 +90,7 @@ class TomographyDataset(Dataset):
         self.global_tf, self.local_tf, self.test_tf = get_augmentations(
             variant=variant, img_size=img_size,
             global_scale=global_scale, local_scale=local_scale,
+            crop_mode=crop_mode, carry_mask=foreground_mask,
         )
         self._open = OrderedDict()
 
@@ -142,6 +148,34 @@ class TomographyDataset(Dataset):
         self._open[path] = (container, arr)
         return arr
 
+    def _load_fg_mask(self, path, local, img: torch.Tensor) -> torch.Tensor:
+        """Return ``[1, H, W]`` float foreground mask for slice ``local``."""
+        if self.fg_key is not None:
+            container, root = self._open_volume(path)
+            try:
+                fg_arr = _resolve_array(root, self.fg_key)
+                fg = np.ascontiguousarray(fg_arr[local], dtype=np.float32)
+                if fg.ndim == 3:
+                    fg = fg[0]
+                fg_t = torch.from_numpy(fg)
+                if fg_t.dim() == 2:
+                    fg_t = fg_t.unsqueeze(0)
+                return (fg_t > 0.5).float()
+            except KeyError:
+                pass
+            finally:
+                self._close(container)
+        return build_slice_fg_mask(img, self.fg_std_thresh)
+
+    def _apply_tf(self, tf, img, fg=None):
+        if self.foreground_mask:
+            if fg is None:
+                fg = build_slice_fg_mask(img, self.fg_std_thresh)
+            sample = wrap_image_mask(img, fg)
+            img, fg = unwrap_image_mask(tf(sample))
+            return img, fg
+        return tf(img), None
+
     def __getitem__(self, idx):
         info, local = self._locate(idx)
         try:
@@ -154,11 +188,26 @@ class TomographyDataset(Dataset):
             _, h, w = info["shape"]
             img = torch.zeros((1, h, w), dtype=torch.float32)
 
+        fg_src = (self._load_fg_mask(info["path"], local, img)
+                  if self.foreground_mask else None)
+
         if self.is_train:
-            views = ([self.global_tf(img) for _ in range(self.global_views)]
-                     + [self.local_tf(img) for _ in range(self.local_views)])
+            views, fg_views = [], []
+            for _ in range(self.global_views):
+                v, f = self._apply_tf(self.global_tf, img, fg_src)
+                views.append(v)
+                fg_views.append(f)
+            for _ in range(self.local_views):
+                v, f = self._apply_tf(self.local_tf, img, fg_src)
+                views.append(v)
+                fg_views.append(f)
+            if self.foreground_mask:
+                return torch.stack(views), torch.stack(fg_views)
             return torch.stack(views), 0
-        return self.test_tf(img), 0
+        view, fg = self._apply_tf(self.test_tf, img, fg_src)
+        if self.foreground_mask:
+            return view, fg
+        return view, 0
 
 
 # Backwards-compatible alias (the class used to be HDF5-only).

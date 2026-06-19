@@ -42,6 +42,11 @@ def parse_args():
                    help="Storage backend; 'auto' infers from each file's extension")
     p.add_argument("--dataset_key", default="reconstruction")
     p.add_argument("--augment", choices=["tomo", "tomo2"], default="tomo2")
+    p.add_argument("--crop_mode", choices=["resized", "native"], default="resized",
+                   help="'resized' = RandomResizedCrop (area-scale crop rescaled to "
+                        "--img_size); 'native' = RandomCrop (true full-resolution "
+                        "--img_size window, no rescaling; --global_scale/--local_scale "
+                        "are ignored).")
     p.add_argument("--img_size", type=int, default=512)
     p.add_argument("--in_chans", type=int, default=1,
                    help="1 for grayscale tomography, 3 for RGB baselines")
@@ -328,7 +333,7 @@ def main():
         global_views=args.global_views, local_views=args.local_views,
         global_scale=tuple(args.global_scale), local_scale=tuple(args.local_scale),
         variant=args.augment, img_size=args.img_size, is_train=True,
-        backend=args.backend,
+        backend=args.backend, crop_mode=args.crop_mode,
     )
     # Under torchrun, DistributedSampler shards the dataset across ranks; each
     # rank gets an equal, disjoint slice (drop_last keeps shard sizes constant,

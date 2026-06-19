@@ -3,7 +3,9 @@ import numpy as np
 
 from tomojepa.viz.zscore_explorer import (
     apply_display_gamma,
+    apply_morphology,
     combine_masks,
+    disk_struct,
     extract_view,
     gamma_colorscale,
     lasso_selection,
@@ -149,3 +151,29 @@ def test_threshold_and_combine_masks():
     assert combine_masks([a, b], "OR").tolist() == [[True, True], [True, True]]
     assert combine_masks([a, b], "XOR").tolist() == [[True, True], [False, True]]
     assert combine_masks([], "OR") is None
+
+
+def test_morphology_removes_speck_and_keeps_blob():
+    mask = np.zeros((40, 40), dtype=bool)
+    mask[10:30, 10:30] = True   # large blob
+    mask[2, 2] = True           # isolated speck (dust)
+    cleaned = apply_morphology(mask, [{"op": "open", "size": 1, "iterations": 1}])
+    assert not cleaned[2, 2]            # dust removed
+    assert cleaned[20, 20]             # blob preserved
+    # no-op sequence returns mask unchanged
+    same = apply_morphology(mask, [])
+    assert same[2, 2] and same[20, 20]
+
+
+def test_morphology_close_fills_hole():
+    mask = np.ones((20, 20), dtype=bool)
+    mask[10, 10] = False  # single-pixel hole
+    closed = apply_morphology(mask, [{"op": "close", "size": 1, "iterations": 1}])
+    assert closed[10, 10]
+
+
+def test_disk_struct_shape():
+    st = disk_struct(2)
+    assert st.shape == (5, 5)
+    assert st[2, 2]
+    assert not st[0, 0]

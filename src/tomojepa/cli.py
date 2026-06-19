@@ -68,6 +68,19 @@ def validate(ctx: typer.Context):
     _forward("tomojepa.ssl.validate:main", "tomojepa validate", ctx.args)
 
 
+@app.command("train-swinjepa", context_settings=_PASSTHROUGH,
+             help="Swin multi-scale latent-JEPA pre-training with per-stage SIGReg "
+                  "(pass --help for flags).")
+def train_swinjepa(ctx: typer.Context):
+    _forward("tomojepa.swinjepa.train:main", "tomojepa train-swinjepa", ctx.args)
+
+
+@app.command("validate-swinjepa", context_settings=_PASSTHROUGH,
+             help="Intrinsic validation of SwinMSJEPA runs (per-stage rank, JEPA eval).")
+def validate_swinjepa(ctx: typer.Context):
+    _forward("tomojepa.swinjepa.validate:main", "tomojepa validate-swinjepa", ctx.args)
+
+
 @app.command("train-vitup", context_settings=_PASSTHROUGH,
              help="ViT-Up multi-scale feature distillation training.")
 def train_vitup(ctx: typer.Context):

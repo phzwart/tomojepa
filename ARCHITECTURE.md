@@ -17,6 +17,7 @@ Three subsystems share **one** ViT backbone definition and **one** data loader:
 | Package | Role | Entry point |
 |---------|------|-------------|
 | `tomojepa.ssl` | LeJEPA / DINOv3 self-supervised pre-training + label-free validation | `train-ssl`, `validate` |
+| `tomojepa.swinjepa` | Swin multi-scale latent-JEPA pre-training (per-stage SIGReg) | `train-swinjepa` |
 | `tomojepa.vitup` | ViT-Up faithful feature upsampling (distillation + dense inference) | `train-vitup`, `infer-vitup` |
 | `tomojepa.patchdb` | FAISS + DuckDB cross-image patch retrieval (CLI / API / MCP) | `patchdb …` |
 | `tomojepa.core` | Shared: model, dataset, augmentations, distributed helpers | — |
@@ -269,6 +270,54 @@ feature matrix (Roy & Vetterli, 2007).
 
 ---
 
+## 3b. Swin multi-scale latent-JEPA (`tomojepa.swinjepa`)
+
+A second pre-training method that produces the multi-scale stage stack a
+hierarchical upsampler (ViT-Up family) wants. A Swin-T backbone is trained with
+**multi-scale latent JEPA**: a masked *student* pass predicts the latent stage
+features that the **same weights** produce from the full image under
+stop-gradient, at every pyramid stage. There is **no EMA teacher and no pixel
+decoder** — structurally this is `data2vec`-style multi-scale prediction with
+SIGReg substituted for the momentum teacher. All JEPA/SIGReg machinery is
+training-only; inference exposes only the four stage maps.
+
+- **`backbone.py` — `SwinMultiScaleBackbone`.** Wraps a timm Swin-T (held as
+  submodules, *not* `features_only`) so a learnable `[C1]` mask token can be
+  injected at the stage-1 token grid before the stages run (SimMIM keep-all
+  topology). Exposes the four stage maps channels-first `[B, C_s, h_s, w_s]` and
+  per-stage geometry (`out_chans`, `strides`, `stage_grid`). The timm-version
+  NHWC layout and start-of-stage `PatchMerging` placement are asserted per stage.
+- **`mask.py` — `MultiScaleBlockMask`.** Masking is defined on the **stage-4
+  grid** and nearest-expanded to the finer grids (a s4 cell ↔ an 8×8 s1 block),
+  so every coarser token is cleanly fully-masked or fully-visible. A *fixed*
+  count of s4 cells is masked per sample (`random_cell` or `block` mode) so
+  masked/visible counts are constant across the batch and the predictor stays
+  rectangular.
+- **`predictor.py` — `CrossScalePredictor`.** A small transformer-decoder that
+  predicts each stage's masked latents from the visible context tokens of **all**
+  stages (cross-stage memory; `cross_scale=False` restricts to same-stage). 2-D
+  sin-cos pos embeds + learnable stage ids. `predictor.enabled=False` drops it
+  for the pure data2vec path (loss directly on the student's masked features).
+- **`sigreg.py` — `StageSIGReg`.** The sole anti-collapse term. Reuses the repo's
+  reference `core.model.SIGReg` (characteristic-function GoF vs `N(0,I)` along
+  random 1-D projections) per stage, with a per-stage direction count, a token
+  cap, an optional FIFO feature queue for statistics-starved coarse stages, and a
+  light explicit mean penalty. Computed on the **target-pass** features *with*
+  gradient.
+- **`losses.py`.** Masked multi-scale prediction loss (per-token-LN targets,
+  smooth-L1/MSE), the fine-stage curriculum weighting `lambda_s(step)`, and the
+  collapse diagnostics (per-stage effective rank + feature std).
+- **`model.py` — `SwinMSJEPA` / `SwinMSEncoder`.** `SwinMSJEPA.compute_loss`
+  ties the two passes together: `E_full = backbone(x)` (grad kept for SIGReg,
+  detached for targets) and `E_ctx = backbone(x, mask1)`; the objective is
+  `L_pred + beta_sig·Σ_s scale_s·SIGReg(E_full[s])`. `extract_features` runs one
+  clean pass touching none of the training-only modules; `SwinMSEncoder` is the
+  inference-only counterpart (backbone + optional FPN-style lateral 1×1
+  projections) with `from_pretrained`.
+- **`train.py`.** Same conventions as `ssl`/`vitup` (argparse, AMP bf16, AdamW +
+  warmup/cosine, manual resume, `TomographyDataset`). AdamW uses the standard ViT
+  no-decay list; SIGReg sums are kept fp32; grad-norm clip 3.0; no EMA (asserted).
+
 ## 4. ViT-Up subsystem (`tomojepa.vitup`)
 
 ViT-Up produces **faithful, high-resolution** feature maps from a frozen ViT by
@@ -447,6 +496,15 @@ src/tomojepa/
   ssl/
     train.py          LeJEPA loop: simple_step + GradCache step, MIM/residual
     validate.py       effective rank + augmentation-invariance metrics
+  swinjepa/
+    backbone.py       SwinMultiScaleBackbone (stage maps + stage-1 mask injection)
+    mask.py           MultiScaleBlockMask (s4-grid mask + nearest expansion)
+    predictor.py      CrossScalePredictor (cross-scale masked-latent decoder)
+    sigreg.py         StageSIGReg (per-stage, reuses core.SIGReg)
+    losses.py         masked multi-scale prediction loss + curriculum + diagnostics
+    model.py          SwinMSJEPA (two-pass + extract_features) + SwinMSEncoder
+    config.py         SwinMSJEPAConfig dataclass + argparse wiring
+    train.py          pre-training loop (no EMA; SIGReg-only collapse control)
   vitup/
     backbone_adapter.py  minimal ViT interface + LoRA
     query_embedding.py   q0 from high-res patch-embed cache
