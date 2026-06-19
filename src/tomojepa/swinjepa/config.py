@@ -114,6 +114,11 @@ class SwinMSJEPAConfig:
                 f"got {len(self.lat_dims)}: {self.lat_dims}")
         if any(d <= 0 for d in self.lat_dims):
             raise ValueError(f"lat_dims entries must be positive, got {self.lat_dims}")
+        if not self.legacy_jepa and len(set(self.lat_dims)) != 1:
+            raise ValueError(
+                "pyramid residual algebra requires equal lat_dims across s1..s4 "
+                "(R_s = E_s - up(parent) subtracts tensors of the same width); "
+                "use legacy_jepa=True for per-stage widths or set lat_dims to one shared value")
         if len(self.beta_sig) == 1:
             self.beta_sig = self.beta_sig * self.num_stages
         if len(self.beta_sig) != self.num_stages:

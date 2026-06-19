@@ -136,16 +136,24 @@ def test_inference_purity():
 
 
 def test_per_stage_lat_dims():
-    """Each stage lateral/SIGReg/predictor use the configured width independently."""
-    cfg = small_cfg(lat_dims=(16, 24, 32, 40))
+    """Legacy path allows independent per-stage latent widths."""
+    cfg = small_cfg(legacy_jepa=True, lat_dims=(16, 24, 32, 40))
     model = SwinMSJEPA(cfg)
     assert model.lat_chans == [16, 24, 32, 40]
     for s in range(model.num_stages):
         key = f"s{s + 1}"
         assert model.lateral[key].out_channels == cfg.lat_dims[s]
-    assert model.sigreg_c4.dim == cfg.lat_dims[3]
+        assert model.sigreg[s].dim == cfg.lat_dims[s]
+
+
+def test_pyramid_lat_dims_shared():
+    """Pyramid path uses one shared latent width across all stages."""
+    cfg = small_cfg(lat_dims=(16, 16, 16, 16))
+    model = SwinMSJEPA(cfg)
+    assert model.lat_chans == [16, 16, 16, 16]
+    assert model.sigreg_c4.dim == 16
     for s in range(model.num_stages - 1):
-        assert model.sigreg_r[s].dim == cfg.lat_dims[s]
+        assert model.sigreg_r[s].dim == 16
 
 
 def test_legacy_jepa_per_stage_sigreg():

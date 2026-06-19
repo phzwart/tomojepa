@@ -9,6 +9,14 @@ from tomojepa.swinjepa.pyramid import (
 )
 from tomojepa.swinjepa.sigreg import ImageGroupedStageSIGReg, PooledStageSIGReg
 from .conftest import small_cfg
+import pytest
+
+
+def test_lat_dims_equal_required_for_pyramid():
+    with pytest.raises(ValueError, match="equal lat_dims"):
+        small_cfg(lat_dims=(32, 64, 32, 32), legacy_jepa=False)
+    SwinMSJEPA(small_cfg(lat_dims=(32, 32, 32, 32), legacy_jepa=False))
+    SwinMSJEPA(small_cfg(lat_dims=(32, 64, 32, 32), legacy_jepa=True))
 
 
 def test_upsample_stage_geometry():
