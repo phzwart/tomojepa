@@ -37,7 +37,11 @@ from .pyramid import gather_stage_tokens
 
 
 class StageSIGReg(nn.Module):
-    """SIGReg for one pyramid stage's token distribution.
+    """SIGReg for one pyramid stage's token distribution (legacy ``legacy_jepa`` path).
+
+    Returns an **intensive** (per-token) statistic: ``sig(...) / n_tokens``. The
+    matching ``beta_sig`` entry is a per-token weight and is **not** comparable to
+    the per-slice-scaled :class:`ImageGroupedStageSIGReg` used in the pyramid path.
 
     Args:
         dim: stage channel dim ``C_s`` (queue width).
@@ -114,6 +118,7 @@ class StageSIGReg(nn.Module):
 
         if self.queue_len > 0:
             self._enqueue(z.detach())
+        # Intensive per-token scale; see class docstring re beta_sig vs pyramid path.
         return loss
 
 
@@ -173,7 +178,11 @@ class PooledStageSIGReg(nn.Module):
 
 
 class ImageGroupedStageSIGReg(nn.Module):
-    """SIGReg on FG token subsamples with **slice-balanced** calibration.
+    """SIGReg on FG token subsamples with **slice-balanced** calibration (pyramid path).
+
+    Returns a **per-independent-slice** statistic: ``stat * n_slices / n_tokens``.
+    The matching ``beta_sig`` entry weights that scale and is **not** comparable
+    to the intensive :class:`StageSIGReg` used when ``legacy_jepa=True``.
 
     Each image contributes ``n_tokens_per_slice`` tokens (not one pooled vector).
     The core :class:`SIGReg` multiplies its statistic by the token count ``N``;
@@ -181,14 +190,16 @@ class ImageGroupedStageSIGReg(nn.Module):
     re-scale by ``n_slices / N`` so the term is calibrated to the number of
     **independent images** in the batch + FIFO queue (SSL / LeJEPA batch scale).
 
-    When ``n_slices`` or the batch effective rank is below ``n_dirs``, projection
-    directions are capped so the CF estimate is not over-parameterized.
+    Projection directions are capped by ``n_dirs`` (bounded by latent dim) and
+    ``n_slices``; optional rank-based capping is off by default because
+    low-variance (collapsed) directions are the signal SIGReg must test.
     """
 
     def __init__(self, dim: int, n_dirs: int = 256, knots: int = 17,
                  t_max: float = 3.0, w_mean: float = 0.1,
                  n_tokens_per_slice: int = 32, min_grid_dist: int = 2,
-                 queue_len: int = 512):
+                 queue_len: int = 512, cap_dirs_by_rank: bool = False,
+                 min_dirs: int = 16, queue_token_cap: Optional[int] = None):
         super().__init__()
         self.dim = dim
         self.n_dirs = n_dirs
@@ -196,11 +207,16 @@ class ImageGroupedStageSIGReg(nn.Module):
         self.n_tokens_per_slice = n_tokens_per_slice
         self.min_grid_dist = min_grid_dist
         self.queue_len = queue_len
+        self.cap_dirs_by_rank = cap_dirs_by_rank
+        self.min_dirs = min_dirs
+        self.queue_token_cap = (
+            queue_token_cap if queue_token_cap is not None
+            else max(n_tokens_per_slice, 1))
         self.sig = SIGReg(knots=knots, t_max=t_max, n_sketches=n_dirs)
         if queue_len > 0:
             self.register_buffer(
                 "queue",
-                torch.zeros(queue_len, n_tokens_per_slice, dim))
+                torch.zeros(queue_len, self.queue_token_cap, dim))
             self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
             self.register_buffer("queue_size", torch.zeros(1, dtype=torch.long))
 
@@ -227,16 +243,36 @@ class ImageGroupedStageSIGReg(nn.Module):
         self.queue_size[0] = min(self.queue_len, int(self.queue_size[0]) + b)
 
     def _effective_dirs(self, n_slices: int, batch_tokens: torch.Tensor) -> int:
-        """Cap random projections by slice count and batch effective rank."""
-        r = effective_rank(batch_tokens.detach(), max_tokens=batch_tokens.shape[0])
-        r_cap = max(4, int(round(r)))
-        return min(self.n_dirs, max(4, n_slices), r_cap)
+        """Cap random projections by slice count; rank cap optional.
+
+        Low-variance directions are the collapse signal (variance != 1 shows up
+        in the CF test) -- do not drop them unless ``cap_dirs_by_rank`` is on.
+        """
+        floor = max(self.min_dirs, n_slices)
+        n_eff = min(self.n_dirs, floor)
+        if self.cap_dirs_by_rank:
+            r = effective_rank(batch_tokens.detach(),
+                               max_tokens=batch_tokens.shape[0])
+            n_eff = min(n_eff, max(self.min_dirs, int(round(r))))
+        return n_eff
 
     def forward(self, feat: torch.Tensor,
                 fg_stage: Optional[torch.Tensor] = None) -> torch.Tensor:
         """``feat`` ``[B,C,h,w]`` stage map; grad flows through current-batch tokens."""
-        slices = gather_stage_tokens(
-            feat, fg_stage, self.n_tokens_per_slice, self.min_grid_dist)
+        if fg_stage is not None:
+            slices, valid = gather_stage_tokens(
+                feat, fg_stage, self.n_tokens_per_slice, self.min_grid_dist,
+                token_cap=(self.queue_token_cap
+                           if self.n_tokens_per_slice <= 0 else None),
+                return_valid=True)
+            if not valid.any():
+                return feat.new_zeros(())
+            slices = slices[valid]
+        else:
+            slices = gather_stage_tokens(
+                feat, fg_stage, self.n_tokens_per_slice, self.min_grid_dist,
+                token_cap=(self.queue_token_cap
+                           if self.n_tokens_per_slice <= 0 else None))
         b, m, _ = slices.shape
         z = slices.reshape(b * m, -1).float()
         mu = z.mean(0)
@@ -266,4 +302,5 @@ class ImageGroupedStageSIGReg(nn.Module):
 
         if self.queue_len > 0:
             self._enqueue(slices.detach())
+        # Per-slice scale; see class docstring re beta_sig vs legacy StageSIGReg.
         return loss

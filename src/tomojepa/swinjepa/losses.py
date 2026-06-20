@@ -50,7 +50,11 @@ def gather_masked(feat: torch.Tensor, mask_s: torch.Tensor) -> torch.Tensor:
     b, c, h, w = feat.shape
     tok = feat.permute(0, 2, 3, 1).reshape(b, h * w, c)
     mflat = mask_s.reshape(b, h * w)
-    k = int(mflat[0].sum())
+    row_counts = mflat.sum(1)
+    k = int(row_counts[0])
+    if not (row_counts == k).all():
+        raise ValueError(
+            f"gather_masked: per-sample masked counts differ {row_counts.tolist()}")
     return tok[mflat].view(b, k, c)
 
 
@@ -170,6 +174,9 @@ def masked_prediction_loss(pred: Dict[str, torch.Tensor],
     total = pred[next(iter(pred))].new_zeros(())
     per_stage: Dict[str, float] = {}
     for i, key in enumerate(sorted(pred.keys())):
+        if lambdas[i] <= 0.0:
+            per_stage[key] = 0.0
+            continue
         tgt = gather_masked(targets[key], mask[key]).to(pred[key].dtype)
         if loss_type == "mse":
             ls = F.mse_loss(pred[key], tgt)

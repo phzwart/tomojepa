@@ -1,0 +1,66 @@
+name: c4_sweep_039
+run:
+  epochs: 10
+  mask_ratio: 0.6419
+  seed: 20260659
+stages:
+  s1:
+    active: &id001
+    - progress: 0.0
+      value: 0.0
+    beta_sig: &id002
+    - progress: 0.0
+      value: 0.0
+    freeze: &id003
+    - progress: 0.0
+      value: false
+  s2:
+    active: *id001
+    beta_sig: *id002
+    freeze: *id003
+  s3:
+    active: *id001
+    beta_sig: *id002
+    freeze: *id003
+  s4:
+    active:
+    - progress: 0.0
+      value: 1.0
+    beta_sig:
+    - progress: 0.0
+      value: 0.647892
+    freeze:
+    - progress: 0.0
+      value: false
+augmentations:
+  variant: tomo2
+  crop_mode: resize
+  global_views: 1
+  local_views: 0
+  random_rotate_deg: 0.0
+  resize_jitter:
+  - 0.8769
+  - 1.1231
+  hflip_p: 0.0
+  vflip_p: 0.0
+  intensity_augment: true
+  window:
+    p_low: 0.01
+    p_high: 0.99
+    sample_size: 100000
+  blur:
+    kernel_size: 7
+    sigma:
+    - 0.1
+    - 1.0
+    p: 0.0
+  poisson:
+    scale: 10000
+    p: 0.312502580267257
+  pixel_mask:
+    ratio: 0.15
+    p: 0.11173251345370545
+  normalize:
+    mean: 0.5
+    std: 0.5
+  equalize_p: 0.7777574530926702

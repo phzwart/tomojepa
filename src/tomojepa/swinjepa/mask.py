@@ -84,7 +84,46 @@ class MultiScaleBlockMask:
         for s in range(b):
             n_fg = int(fg_s4[s].sum().item())
             k_eff = min(k_eff, max(0, n_fg - 1))
-        return max(1, k_eff)
+        k_eff = max(1, k_eff)
+        for s in range(b):
+            n_fg = int(fg_s4[s].sum().item())
+            if n_fg < k_eff + 1:
+                raise ValueError(
+                    f"FG sample {s} has {n_fg} eligible s4 cells but k_eff={k_eff} "
+                    f"requires at least {k_eff + 1}")
+        return k_eff
+
+    @staticmethod
+    def _top_up_fg_to_k(flat: torch.Tensor, fg_flat: torch.Tensor,
+                        k_eff: int, device) -> None:
+        """Enable random unmasked FG cells until ``flat`` has exactly ``k_eff`` True."""
+        cur = int(flat.sum())
+        if cur >= k_eff:
+            return
+        off = (~flat & fg_flat).nonzero(as_tuple=False).squeeze(1)
+        need = k_eff - cur
+        if off.numel() >= need:
+            add = off[torch.randperm(off.numel(), device=device)[:need]]
+            flat[add] = True
+        elif off.numel() > 0:
+            flat[off] = True
+
+    def _finalize_fg_mask4(self, mask4: torch.Tensor, fg_s4: torch.Tensor,
+                           device) -> torch.Tensor:
+        """Drop any BG-masked s4 cells and rebalance to batch-constant ``k_eff``."""
+        mask4 = mask4 & fg_s4
+        k_eff = self._effective_k(fg_s4)
+        for s in range(mask4.shape[0]):
+            flat = mask4[s].view(-1)
+            fg_flat = fg_s4[s].reshape(-1)
+            cur = int(flat.sum())
+            if cur > k_eff:
+                on = flat.nonzero(as_tuple=False).squeeze(1)
+                drop = on[torch.randperm(on.numel(), device=device)[: cur - k_eff]]
+                flat[drop] = False
+            elif cur < k_eff:
+                self._top_up_fg_to_k(flat, fg_flat, k_eff, device)
+        return mask4
 
     def _sample_random_cell_fg(self, b: int, device, fg_s4: torch.Tensor) -> torch.Tensor:
         """``[b, h4, w4]`` bool: exactly ``k_eff`` True cells per sample, FG only."""
@@ -97,6 +136,9 @@ class MultiScaleBlockMask:
             if k_s > 0:
                 pick = fg_idx[torch.randperm(n_fg, device=device)[:k_s]]
                 mask4[s].view(-1)[pick] = True
+            flat = mask4[s].view(-1)
+            fg_flat = fg_s4[s].reshape(-1)
+            self._top_up_fg_to_k(flat, fg_flat, k_eff, device)
         return mask4
 
     def _sample_block_fg(self, b: int, device, fg_s4: torch.Tensor) -> torch.Tensor:
@@ -132,10 +174,7 @@ class MultiScaleBlockMask:
                 flat[drop] = False
             elif cur < k_eff:
                 off = (~flat & fg_flat).nonzero(as_tuple=False).squeeze(1)
-                need = k_eff - cur
-                if off.numel() >= need:
-                    add = off[torch.randperm(off.numel(), device=device)[:need]]
-                    flat[add] = True
+                self._top_up_fg_to_k(flat, fg_flat, k_eff, device)
         return mask
 
     def _sample_random_cell(self, b: int, device) -> torch.Tensor:
@@ -199,6 +238,8 @@ class MultiScaleBlockMask:
         is given, masked cells are sampled only from foreground positions; ``k`` is
         capped per batch so at least one visible FG cell remains in every sample.
         Prefer ``fg_s1`` so the expanded stage-1 mask stays inside the FOV.
+        Background tokens are never masked: the stage-4 mask is scrubbed against
+        ``fg_s4`` and rebalanced before expansion.
         """
         device = device or self.device or torch.device("cpu")
         if fg_s1 is not None:
@@ -215,10 +256,16 @@ class MultiScaleBlockMask:
                 mask4 = self._sample_random_cell_fg(b, device, fg_s4)
             else:
                 mask4 = self._sample_block_fg(b, device, fg_s4)
+            mask4 = self._finalize_fg_mask4(mask4, fg_s4, device)
         elif self.mask_mode == "random_cell":
             mask4 = self._sample_random_cell(b, device)
         else:
             mask4 = self._sample_block(b, device)
+        counts = mask4.flatten(1).sum(1)
+        if counts.min() != counts.max():
+            raise AssertionError(
+                f"FG/block mask path: per-sample masked counts differ "
+                f"{counts.tolist()}; expected batch-constant k={int(counts.max())}")
         out: Dict[str, torch.Tensor] = {}
         for s in range(self.num_stages):
             out[f"s{s + 1}"] = self.expand(mask4, self.stage_grid(s))

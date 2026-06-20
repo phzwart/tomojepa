@@ -8,8 +8,10 @@ import torch
 
 from tomojepa.core.augmentations import (
     pool_fg_to_stage, build_fg_stages, build_slice_fg_mask,
+    build_circle_fg_mask, build_fg_mask,
 )
 from tomojepa.swinjepa.model import SwinMSJEPA, SwinMSEncoder, extract_fg_masks
+from tomojepa.swinjepa.predictor import RoPEMultiheadAttention, stage_token_coords
 from .conftest import small_cfg
 
 
@@ -25,6 +27,20 @@ def test_predictor_output_shapes():
         key = f"s{s + 1}"
         k = int(mask[key][0].sum())
         assert pred[key].shape == (b, k, model.lat_chans[s])
+
+
+def test_predictor_uses_rope_by_default():
+    model = SwinMSJEPA(small_cfg())
+    assert model.predictor.use_rope
+    assert isinstance(model.predictor.blocks[0].self_attn, RoPEMultiheadAttention)
+    coords = stage_token_coords(3, model.grids, torch.device("cpu"), torch.float32)
+    assert coords.shape == (model.grids[3][0] * model.grids[3][1], 2)
+
+
+def test_predictor_no_rope_fallback():
+    model = SwinMSJEPA(small_cfg(use_rope=False))
+    assert not model.predictor.use_rope
+    assert hasattr(model.predictor, "pos_embed_0")
 
 
 def test_two_pass_gradient_routing():
@@ -124,7 +140,6 @@ def test_inference_purity():
     model.predictor = None
     model.sigreg = None
     model.coarse_head = None
-    model.sigreg_c4 = None
     model.sigreg_r = None
     x = torch.randn(2, 1, 64, 64)
     feats = model.extract_features(x, normalize=True, project=True)
@@ -151,8 +166,7 @@ def test_pyramid_lat_dims_shared():
     cfg = small_cfg(lat_dims=(16, 16, 16, 16))
     model = SwinMSJEPA(cfg)
     assert model.lat_chans == [16, 16, 16, 16]
-    assert model.sigreg_c4.dim == 16
-    for s in range(model.num_stages - 1):
+    for s in range(model.num_stages):
         assert model.sigreg_r[s].dim == 16
 
 
@@ -178,6 +192,77 @@ def test_encoder_roundtrip(tmp_path):
         b = enc.extract_features(x, normalize=False)
     for key in model.stage_keys:
         assert torch.allclose(a[key], b[key], atol=1e-5)
+
+
+def test_regularized_features_shapes():
+    torch.manual_seed(0)
+    cfg = small_cfg()
+    model = SwinMSJEPA(cfg).eval()
+    x = torch.randn(2, 1, 64, 64)
+    feats = model.regularized_features(x, normalize=False)
+    for s, key in enumerate(model.stage_keys):
+        assert key in feats
+        assert feats[key].shape[1] == cfg.lat_dims[s]
+
+
+def test_regularized_features_inference_purity():
+    torch.manual_seed(0)
+    model = SwinMSJEPA(small_cfg()).eval()
+    del model.predictor, model.sigreg_r, model.coarse_head, model.mask_gen
+    x = torch.randn(1, 1, 64, 64)
+    feats = model.regularized_features(x)
+    assert set(feats) == set(model.stage_keys)
+
+
+def test_regularized_features_encoder_parity(tmp_path):
+    torch.manual_seed(0)
+    cfg = small_cfg()
+    model = SwinMSJEPA(cfg).eval()
+    ckpt = tmp_path / "ckpt.pth"
+    torch.save({"model": model.state_dict()}, ckpt)
+    enc = SwinMSEncoder.from_pretrained(str(ckpt), cfg).eval()
+    x = torch.randn(1, 1, 64, 64)
+    with torch.no_grad():
+        a = model.regularized_features(x, normalize=False)
+        b = enc.regularized_features(x, normalize=False)
+    for key in model.stage_keys:
+        assert torch.allclose(a[key], b[key], atol=1e-5)
+
+
+def test_build_circle_fg_mask_inscribed():
+    """Inscribed FOV disk (diameter=W) marks square corners as background."""
+    fg = build_circle_fg_mask(torch.zeros(1, 64, 64), diameter_frac=1.0)[0]
+    assert bool(fg[0, 0] < 0.5)
+    assert bool(fg[32, 32] > 0.5)
+    assert bool(fg[0, 32] > 0.5)   # top edge midpoint is inside
+    assert bool(fg[32, 0] > 0.5)   # left edge midpoint is inside
+
+
+def test_build_circle_fg_mask_diameter_2w():
+    """diameter_frac=2.0 (diameter=2*W) contains the full square."""
+    fg = build_circle_fg_mask(torch.zeros(1, 64, 64), diameter_frac=2.0)[0]
+    assert bool(fg.all())
+
+
+def test_build_fg_mask_modes():
+    img = torch.randn(1, 32, 32)
+    assert build_fg_mask(img, "circle").shape == (1, 32, 32)
+    assert build_fg_mask(img, "std", fg_std_thresh=0.05).shape == (1, 32, 32)
+
+
+def test_fg_mask_carried_through_crop_down():
+    """Native circle mask must follow zoom/crop, not be re-fit on the tile."""
+    from tomojepa.core.augmentations import get_augmentations, wrap_image_mask, unwrap_image_mask
+    img = torch.rand(1, 2048, 2048)
+    fg_native = build_fg_mask(img, "circle", fg_circle_diameter_frac=1.0)
+    tf, _, _ = get_augmentations(
+        img_size=224, crop_mode="crop_down", carry_mask=True, random_rotate_deg=180,
+    )
+    torch.manual_seed(0)
+    img_out, fg_carried = unwrap_image_mask(tf(wrap_image_mask(img, fg_native)))
+    fg_rebuilt = build_fg_mask(img_out, "circle", fg_circle_diameter_frac=1.0)
+    assert fg_carried.shape == (1, 224, 224)
+    assert not torch.equal(fg_carried, fg_rebuilt)
 
 
 def test_pool_fg_circular_counts():
@@ -272,6 +357,28 @@ def test_foreground_mask_wiring():
     assert torch.isfinite(loss)
     assert "fg_cov/s1" in logs
     assert logs["fg_cov/s1"] > 0.0
+
+
+def test_mim_never_masks_background():
+    """MIM masks and coarse MAE must never target background tokens."""
+    torch.manual_seed(0)
+    cfg = small_cfg(foreground_mask=True, fg_coverage=0.01, mask_ratio=0.55)
+    model = SwinMSJEPA(cfg).train()
+    x = torch.randn(4, 1, 64, 64)
+    fg = build_slice_fg_mask(x[0], fg_std_thresh=0.05).unsqueeze(0).expand(4, -1, -1, -1)
+    fg_stages = build_fg_stages(fg, model.grids, cfg.fg_coverage)
+    x_aug, mask, fg_out, _, E_ctx = model._shared_forward(x, fg, [True] * 4)
+    assert fg_out is not None
+    for key in model.stage_keys:
+        bg = ~fg_out[key]
+        if bg.any():
+            assert not (mask[key] & bg).any(), f"mask overlaps BG at {key}"
+    assert not (mask["s1"] & (~fg_out["s1"])).any()
+    if model.predictor is not None:
+        pred = model.predictor(E_ctx, mask, fg_stages=fg_out)
+        assert pred  # smoke: FG-only masked queries stay rectangular
+    loss, _ = model.compute_loss(x, fg_px=fg, step=0, total_steps=10)
+    assert torch.isfinite(loss)
 
 
 def test_foreground_off_ignores_fg():

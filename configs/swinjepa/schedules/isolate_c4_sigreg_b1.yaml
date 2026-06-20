@@ -1,0 +1,68 @@
+# Isolate C4-only training with beta_sig=1.0 on s4 (2x default isolate_c4_sigreg).
+
+name: isolate_c4_sigreg_b1
+
+stages:
+  s1:
+    active:
+      - {progress: 0.00, value: 0.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.0}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s2:
+    active:
+      - {progress: 0.00, value: 0.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.0}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s3:
+    active:
+      - {progress: 0.00, value: 0.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.0}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s4:
+    active:
+      - {progress: 0.00, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 1.0}
+    freeze:
+      - {progress: 0.00, value: false}
+
+augmentations:
+  variant: tomo2
+  crop_mode: resize
+  global_views: 1
+  local_views: 0
+  random_rotate_deg: 0
+  resize_jitter: [0.9, 1.1]
+  window:
+    p_low: 0.01
+    p_high: 0.99
+    sample_size: 100000
+  equalize_p: 0.5
+  blur:
+    p: 0.5
+    kernel_size: 7
+    sigma: [0.1, 1.0]
+  poisson:
+    p: 0.5
+    scale: 10000
+  pixel_mask:
+    p: 0.5
+    ratio: 0.15
+  normalize:
+    mean: 0.5
+    std: 0.5
+  intensity_augment: true
+  # Optional progress schedule (same knot format as stage schedules):
+  # schedule:
+  #   resize_jitter:
+  #     - {progress: 0.0, value: [0.95, 1.05]}
+  #     - {progress: 0.5, value: [0.9, 1.1]}

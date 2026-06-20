@@ -1,0 +1,42 @@
+# C4-only isolate template for random augmentation sweeps.
+# Per-run YAMLs extend this with sampled beta_sig, mask_ratio, and augmentations.
+
+name: c4_random_template
+
+stages:
+  s1:
+    active: [{progress: 0.0, value: 0.0}]
+    beta_sig: [{progress: 0.0, value: 0.0}]
+    freeze: [{progress: 0.0, value: false}]
+  s2:
+    active: [{progress: 0.0, value: 0.0}]
+    beta_sig: [{progress: 0.0, value: 0.0}]
+    freeze: [{progress: 0.0, value: false}]
+  s3:
+    active: [{progress: 0.0, value: 0.0}]
+    beta_sig: [{progress: 0.0, value: 0.0}]
+    freeze: [{progress: 0.0, value: false}]
+  s4:
+    active: [{progress: 0.0, value: 1.0}]
+    beta_sig: [{progress: 0.0, value: 1.0}]  # overridden per run
+    freeze: [{progress: 0.0, value: false}]
+
+augmentations:
+  variant: tomo2
+  crop_mode: resize
+  global_views: 1
+  local_views: 0
+  window:
+    p_low: 0.01
+    p_high: 0.99
+    sample_size: 100000
+  blur:
+    kernel_size: 7
+    sigma: [0.1, 1.0]
+  poisson:
+    scale: 10000
+  pixel_mask:
+    ratio: 0.15
+  normalize:
+    mean: 0.5
+    std: 0.5

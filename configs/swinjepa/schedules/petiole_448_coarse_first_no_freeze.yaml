@@ -1,0 +1,43 @@
+# Same coarse-in ramps as petiole_448_coarse_first.yaml but no stage freezes.
+# Use to A/B freeze vs curriculum-only.
+
+name: petiole_448_coarse_first_no_freeze
+
+stages:
+  s4:
+    active:
+      - {progress: 0.00, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.01}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s3:
+    active:
+      - {progress: 0.00, value: 0.1}
+      - {progress: 0.15, value: 0.1}
+      - {progress: 0.30, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.05}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s2:
+    active:
+      - {progress: 0.00, value: 0.1}
+      - {progress: 0.30, value: 0.1}
+      - {progress: 0.45, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.05}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s1:
+    active:
+      - {progress: 0.00, value: 0.1}
+      - {progress: 0.45, value: 0.1}
+      - {progress: 0.60, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.05}
+    freeze:
+      - {progress: 0.00, value: false}

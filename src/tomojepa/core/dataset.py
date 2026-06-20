@@ -6,8 +6,9 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .augmentations import (get_augmentations, build_slice_fg_mask,
-                            wrap_image_mask, unwrap_image_mask)
+from .augmentations import (build_augmentations, build_probe_augmentation, build_fg_mask,
+                            wrap_image_mask, unwrap_image_mask, DynamicAugStore)
+from .aug_config import AugmentationConfig, AugmentationSchedule
 
 
 def _resolve_array(root, key):
@@ -41,8 +42,14 @@ class TomographyDataset(Dataset):
                  global_views=2, local_views=2,
                  global_scale=(0.4, 1.0), local_scale=(0.1, 0.4),
                  variant="tomo2", img_size=512, is_train=True, max_open_files=64,
-                 backend="auto", crop_mode="resized",
-                 foreground_mask=False, fg_std_thresh=0.05, fg_key=None):
+                 backend="auto", crop_mode="resized", crop_size=None,
+                 foreground_mask=False, fg_mode="std", fg_std_thresh=0.05,
+                 fg_circle_diameter_frac=1.0, fg_key=None,
+                 random_rotate_deg=None, probe_geom=False,
+                 resize_jitter_scale=None,
+                 aug_config: AugmentationConfig | None = None,
+                 aug_schedule: AugmentationSchedule | None = None,
+                 shared_aug_state: bool = False):
         self.data_dir = data_dir
         self.dataset_key = dataset_key
         self.fg_key = fg_key
@@ -52,7 +59,9 @@ class TomographyDataset(Dataset):
         self.is_train = is_train
         self.max_open_files = max_open_files
         self.foreground_mask = foreground_mask
+        self.fg_mode = fg_mode
         self.fg_std_thresh = fg_std_thresh
+        self.fg_circle_diameter_frac = fg_circle_diameter_frac
         if backend not in ("auto", "h5", "zarr"):
             raise ValueError(f"unknown backend: {backend!r}")
         self.backend = backend
@@ -87,12 +96,63 @@ class TomographyDataset(Dataset):
                 f"key {dataset_key!r}."
             )
 
-        self.global_tf, self.local_tf, self.test_tf = get_augmentations(
-            variant=variant, img_size=img_size,
-            global_scale=global_scale, local_scale=local_scale,
-            crop_mode=crop_mode, carry_mask=foreground_mask,
-        )
+        self.random_rotate_deg = random_rotate_deg
+        self.resize_jitter_scale = resize_jitter_scale
+        self.img_size = img_size
+        self.crop_size = crop_size
+        self.probe_geom = probe_geom
+
+        if aug_config is None:
+            from .augmentations import _legacy_config_from_kwargs
+            aug_config = _legacy_config_from_kwargs(
+                variant, crop_mode, global_scale, local_scale,
+                random_rotate_deg, resize_jitter_scale)
+        else:
+            aug_config = aug_config
+        if global_views != aug_config.global_views or local_views != aug_config.local_views:
+            from dataclasses import replace
+            aug_config = replace(aug_config,
+                                 global_views=global_views, local_views=local_views)
+        self.aug_config = aug_config
+        self.aug_schedule = aug_schedule
+        self.global_views = aug_config.global_views
+        self.local_views = aug_config.local_views
+        self.V = self.global_views + self.local_views
+        self.random_rotate_deg = aug_config.random_rotate_deg
+        self.resize_jitter_scale = aug_config.resize_jitter_scale()
+
+        use_dynamic = aug_schedule is not None and is_train and not probe_geom
+        self._aug_dynamic = DynamicAugStore()
+        self._aug_dynamic.update_from_config(aug_config)
+        if use_dynamic and shared_aug_state:
+            self._aug_dynamic.enable_shared()
+
+        self._rebuild_transforms()
         self._open = OrderedDict()
+
+    def _rebuild_transforms(self):
+        cfg = self.aug_config
+        dynamic = self._aug_dynamic if (
+            self.aug_schedule is not None and self.is_train and not self.probe_geom
+        ) else None
+        if self.probe_geom:
+            self.test_tf = build_probe_augmentation(
+                cfg, self.img_size, self.foreground_mask, crop_size=self.crop_size)
+            self.global_tf = self.local_tf = self.test_tf
+        else:
+            self.global_tf, self.local_tf, self.test_tf = build_augmentations(
+                cfg, self.img_size, self.foreground_mask, self.crop_size, dynamic)
+
+    def update_augmentations(self, step: int, total_steps: int,
+                             steps_per_epoch: int | None = None) -> None:
+        """Apply scheduled augmentation overrides at ``step`` (no-op if static)."""
+        if self.aug_schedule is None or not self.is_train or self.probe_geom:
+            return
+        state = self.aug_schedule.at(
+            self.aug_config, step, total_steps, steps_per_epoch)
+        self._aug_dynamic.update_from_state(state)
+        self.random_rotate_deg = state.random_rotate_deg
+        self.resize_jitter_scale = state.resize_jitter
 
     def __len__(self):
         return self.total_len
@@ -165,12 +225,14 @@ class TomographyDataset(Dataset):
                 pass
             finally:
                 self._close(container)
-        return build_slice_fg_mask(img, self.fg_std_thresh)
+        return build_fg_mask(img, self.fg_mode, self.fg_std_thresh,
+                             self.fg_circle_diameter_frac)
 
     def _apply_tf(self, tf, img, fg=None):
         if self.foreground_mask:
             if fg is None:
-                fg = build_slice_fg_mask(img, self.fg_std_thresh)
+                fg = build_fg_mask(img, self.fg_mode, self.fg_std_thresh,
+                                   self.fg_circle_diameter_frac)
             sample = wrap_image_mask(img, fg)
             img, fg = unwrap_image_mask(tf(sample))
             return img, fg

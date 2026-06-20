@@ -1,0 +1,819 @@
+sweep: c4_random
+n_runs: 100
+generator_seed: 20260620
+runs_root: runs/c4_random_sweep
+runs:
+- id: 1
+  name: c4_sweep_001
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_001.yaml
+  run_dir: runs/c4_random_sweep/run_001
+  seed: 20260621
+  beta_sig: 91.851983
+  mask_ratio: 0.5948
+  summary: beta_sig=91.85; mask=0.595; rot=on; hflip=off; vflip=off; jitter=off; intensity=on
+- id: 2
+  name: c4_sweep_002
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_002.yaml
+  run_dir: runs/c4_random_sweep/run_002
+  seed: 20260622
+  beta_sig: 29.405652
+  mask_ratio: 0.6012
+  summary: beta_sig=29.41; mask=0.601; rot=on; hflip=on; vflip=off; jitter=off; intensity=off
+- id: 3
+  name: c4_sweep_003
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_003.yaml
+  run_dir: runs/c4_random_sweep/run_003
+  seed: 20260623
+  beta_sig: 88.682546
+  mask_ratio: 0.4062
+  summary: beta_sig=88.68; mask=0.406; rot=on; hflip=off; vflip=off; jitter=off; intensity=on
+- id: 4
+  name: c4_sweep_004
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_004.yaml
+  run_dir: runs/c4_random_sweep/run_004
+  seed: 20260624
+  beta_sig: 32.169639
+  mask_ratio: 0.602
+  summary: beta_sig=32.17; mask=0.602; rot=on; hflip=off; vflip=on; jitter=on; intensity=on
+- id: 5
+  name: c4_sweep_005
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_005.yaml
+  run_dir: runs/c4_random_sweep/run_005
+  seed: 20260625
+  beta_sig: 0.83687
+  mask_ratio: 0.7151
+  summary: beta_sig=0.8369; mask=0.715; rot=off; hflip=on; vflip=off; jitter=on; intensity=off
+- id: 6
+  name: c4_sweep_006
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_006.yaml
+  run_dir: runs/c4_random_sweep/run_006
+  seed: 20260626
+  beta_sig: 41.719554
+  mask_ratio: 0.749
+  summary: beta_sig=41.72; mask=0.749; rot=off; hflip=on; vflip=on; jitter=off; intensity=on
+- id: 7
+  name: c4_sweep_007
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_007.yaml
+  run_dir: runs/c4_random_sweep/run_007
+  seed: 20260627
+  beta_sig: 0.188991
+  mask_ratio: 0.6459
+  summary: beta_sig=0.189; mask=0.646; rot=off; hflip=on; vflip=on; jitter=on; intensity=on
+- id: 8
+  name: c4_sweep_008
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_008.yaml
+  run_dir: runs/c4_random_sweep/run_008
+  seed: 20260628
+  beta_sig: 2.290863
+  mask_ratio: 0.4828
+  summary: beta_sig=2.291; mask=0.483; rot=on; hflip=on; vflip=off; jitter=off; intensity=on
+- id: 9
+  name: c4_sweep_009
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_009.yaml
+  run_dir: runs/c4_random_sweep/run_009
+  seed: 20260629
+  beta_sig: 0.129334
+  mask_ratio: 0.5715
+  summary: beta_sig=0.1293; mask=0.571; rot=on; hflip=off; vflip=on; jitter=off; intensity=off
+- id: 10
+  name: c4_sweep_010
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_010.yaml
+  run_dir: runs/c4_random_sweep/run_010
+  seed: 20260630
+  beta_sig: 2.245004
+  mask_ratio: 0.6602
+  summary: beta_sig=2.245; mask=0.660; rot=on; hflip=off; vflip=on; jitter=off; intensity=off
+- id: 11
+  name: c4_sweep_011
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_011.yaml
+  run_dir: runs/c4_random_sweep/run_011
+  seed: 20260631
+  beta_sig: 0.206767
+  mask_ratio: 0.4241
+  summary: beta_sig=0.2068; mask=0.424; rot=on; hflip=off; vflip=off; jitter=off;
+    intensity=on
+- id: 12
+  name: c4_sweep_012
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_012.yaml
+  run_dir: runs/c4_random_sweep/run_012
+  seed: 20260632
+  beta_sig: 0.620575
+  mask_ratio: 0.3937
+  summary: beta_sig=0.6206; mask=0.394; rot=off; hflip=off; vflip=off; jitter=on;
+    intensity=on
+- id: 13
+  name: c4_sweep_013
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_013.yaml
+  run_dir: runs/c4_random_sweep/run_013
+  seed: 20260633
+  beta_sig: 0.907133
+  mask_ratio: 0.8145
+  summary: beta_sig=0.9071; mask=0.814; rot=on; hflip=off; vflip=off; jitter=on; intensity=off
+- id: 14
+  name: c4_sweep_014
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_014.yaml
+  run_dir: runs/c4_random_sweep/run_014
+  seed: 20260634
+  beta_sig: 51.518854
+  mask_ratio: 0.6856
+  summary: beta_sig=51.52; mask=0.686; rot=on; hflip=off; vflip=on; jitter=off; intensity=on
+- id: 15
+  name: c4_sweep_015
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_015.yaml
+  run_dir: runs/c4_random_sweep/run_015
+  seed: 20260635
+  beta_sig: 17.876779
+  mask_ratio: 0.662
+  summary: beta_sig=17.88; mask=0.662; rot=on; hflip=off; vflip=off; jitter=off; intensity=on
+- id: 16
+  name: c4_sweep_016
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_016.yaml
+  run_dir: runs/c4_random_sweep/run_016
+  seed: 20260636
+  beta_sig: 0.18919
+  mask_ratio: 0.4254
+  summary: beta_sig=0.1892; mask=0.425; rot=off; hflip=off; vflip=on; jitter=off;
+    intensity=off
+- id: 17
+  name: c4_sweep_017
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_017.yaml
+  run_dir: runs/c4_random_sweep/run_017
+  seed: 20260637
+  beta_sig: 0.768697
+  mask_ratio: 0.4425
+  summary: beta_sig=0.7687; mask=0.442; rot=on; hflip=on; vflip=off; jitter=on; intensity=off
+- id: 18
+  name: c4_sweep_018
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_018.yaml
+  run_dir: runs/c4_random_sweep/run_018
+  seed: 20260638
+  beta_sig: 1.775939
+  mask_ratio: 0.6936
+  summary: beta_sig=1.776; mask=0.694; rot=off; hflip=off; vflip=off; jitter=off;
+    intensity=on
+- id: 19
+  name: c4_sweep_019
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_019.yaml
+  run_dir: runs/c4_random_sweep/run_019
+  seed: 20260639
+  beta_sig: 0.135493
+  mask_ratio: 0.6483
+  summary: beta_sig=0.1355; mask=0.648; rot=off; hflip=on; vflip=off; jitter=on; intensity=on
+- id: 20
+  name: c4_sweep_020
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_020.yaml
+  run_dir: runs/c4_random_sweep/run_020
+  seed: 20260640
+  beta_sig: 2.951272
+  mask_ratio: 0.5245
+  summary: beta_sig=2.951; mask=0.524; rot=off; hflip=off; vflip=on; jitter=on; intensity=on
+- id: 21
+  name: c4_sweep_021
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_021.yaml
+  run_dir: runs/c4_random_sweep/run_021
+  seed: 20260641
+  beta_sig: 0.135791
+  mask_ratio: 0.5378
+  summary: beta_sig=0.1358; mask=0.538; rot=on; hflip=on; vflip=off; jitter=off; intensity=on
+- id: 22
+  name: c4_sweep_022
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_022.yaml
+  run_dir: runs/c4_random_sweep/run_022
+  seed: 20260642
+  beta_sig: 0.800547
+  mask_ratio: 0.7007
+  summary: beta_sig=0.8005; mask=0.701; rot=on; hflip=off; vflip=off; jitter=off;
+    intensity=on
+- id: 23
+  name: c4_sweep_023
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_023.yaml
+  run_dir: runs/c4_random_sweep/run_023
+  seed: 20260643
+  beta_sig: 0.342334
+  mask_ratio: 0.6971
+  summary: beta_sig=0.3423; mask=0.697; rot=off; hflip=off; vflip=on; jitter=on; intensity=on
+- id: 24
+  name: c4_sweep_024
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_024.yaml
+  run_dir: runs/c4_random_sweep/run_024
+  seed: 20260644
+  beta_sig: 53.669238
+  mask_ratio: 0.749
+  summary: beta_sig=53.67; mask=0.749; rot=off; hflip=off; vflip=on; jitter=on; intensity=on
+- id: 25
+  name: c4_sweep_025
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_025.yaml
+  run_dir: runs/c4_random_sweep/run_025
+  seed: 20260645
+  beta_sig: 0.221214
+  mask_ratio: 0.3726
+  summary: beta_sig=0.2212; mask=0.373; rot=on; hflip=off; vflip=on; jitter=on; intensity=on
+- id: 26
+  name: c4_sweep_026
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_026.yaml
+  run_dir: runs/c4_random_sweep/run_026
+  seed: 20260646
+  beta_sig: 8.433841
+  mask_ratio: 0.4851
+  summary: beta_sig=8.434; mask=0.485; rot=off; hflip=off; vflip=off; jitter=on; intensity=off
+- id: 27
+  name: c4_sweep_027
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_027.yaml
+  run_dir: runs/c4_random_sweep/run_027
+  seed: 20260647
+  beta_sig: 22.331348
+  mask_ratio: 0.7972
+  summary: beta_sig=22.33; mask=0.797; rot=off; hflip=on; vflip=off; jitter=on; intensity=on
+- id: 28
+  name: c4_sweep_028
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_028.yaml
+  run_dir: runs/c4_random_sweep/run_028
+  seed: 20260648
+  beta_sig: 39.572285
+  mask_ratio: 0.7852
+  summary: beta_sig=39.57; mask=0.785; rot=on; hflip=off; vflip=off; jitter=off; intensity=off
+- id: 29
+  name: c4_sweep_029
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_029.yaml
+  run_dir: runs/c4_random_sweep/run_029
+  seed: 20260649
+  beta_sig: 2.288473
+  mask_ratio: 0.8162
+  summary: beta_sig=2.288; mask=0.816; rot=off; hflip=off; vflip=on; jitter=off; intensity=off
+- id: 30
+  name: c4_sweep_030
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_030.yaml
+  run_dir: runs/c4_random_sweep/run_030
+  seed: 20260650
+  beta_sig: 38.515395
+  mask_ratio: 0.7411
+  summary: beta_sig=38.52; mask=0.741; rot=on; hflip=off; vflip=off; jitter=off; intensity=on
+- id: 31
+  name: c4_sweep_031
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_031.yaml
+  run_dir: runs/c4_random_sweep/run_031
+  seed: 20260651
+  beta_sig: 22.283677
+  mask_ratio: 0.58
+  summary: beta_sig=22.28; mask=0.580; rot=on; hflip=on; vflip=off; jitter=on; intensity=on
+- id: 32
+  name: c4_sweep_032
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_032.yaml
+  run_dir: runs/c4_random_sweep/run_032
+  seed: 20260652
+  beta_sig: 25.522915
+  mask_ratio: 0.5063
+  summary: beta_sig=25.52; mask=0.506; rot=on; hflip=off; vflip=off; jitter=off; intensity=off
+- id: 33
+  name: c4_sweep_033
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_033.yaml
+  run_dir: runs/c4_random_sweep/run_033
+  seed: 20260653
+  beta_sig: 4.277561
+  mask_ratio: 0.6146
+  summary: beta_sig=4.278; mask=0.615; rot=on; hflip=off; vflip=off; jitter=on; intensity=on
+- id: 34
+  name: c4_sweep_034
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_034.yaml
+  run_dir: runs/c4_random_sweep/run_034
+  seed: 20260654
+  beta_sig: 8.492931
+  mask_ratio: 0.839
+  summary: beta_sig=8.493; mask=0.839; rot=on; hflip=off; vflip=on; jitter=off; intensity=on
+- id: 35
+  name: c4_sweep_035
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_035.yaml
+  run_dir: runs/c4_random_sweep/run_035
+  seed: 20260655
+  beta_sig: 0.114356
+  mask_ratio: 0.7192
+  summary: beta_sig=0.1144; mask=0.719; rot=off; hflip=off; vflip=on; jitter=on; intensity=on
+- id: 36
+  name: c4_sweep_036
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_036.yaml
+  run_dir: runs/c4_random_sweep/run_036
+  seed: 20260656
+  beta_sig: 10.374885
+  mask_ratio: 0.5654
+  summary: beta_sig=10.37; mask=0.565; rot=off; hflip=off; vflip=on; jitter=on; intensity=on
+- id: 37
+  name: c4_sweep_037
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_037.yaml
+  run_dir: runs/c4_random_sweep/run_037
+  seed: 20260657
+  beta_sig: 27.065772
+  mask_ratio: 0.7382
+  summary: beta_sig=27.07; mask=0.738; rot=on; hflip=on; vflip=off; jitter=on; intensity=on
+- id: 38
+  name: c4_sweep_038
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_038.yaml
+  run_dir: runs/c4_random_sweep/run_038
+  seed: 20260658
+  beta_sig: 0.42367
+  mask_ratio: 0.4445
+  summary: beta_sig=0.4237; mask=0.445; rot=on; hflip=on; vflip=off; jitter=off; intensity=on
+- id: 39
+  name: c4_sweep_039
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_039.yaml
+  run_dir: runs/c4_random_sweep/run_039
+  seed: 20260659
+  beta_sig: 0.647892
+  mask_ratio: 0.6419
+  summary: beta_sig=0.6479; mask=0.642; rot=off; hflip=off; vflip=off; jitter=on;
+    intensity=on
+- id: 40
+  name: c4_sweep_040
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_040.yaml
+  run_dir: runs/c4_random_sweep/run_040
+  seed: 20260660
+  beta_sig: 1.198952
+  mask_ratio: 0.6764
+  summary: beta_sig=1.199; mask=0.676; rot=off; hflip=off; vflip=on; jitter=on; intensity=on
+- id: 41
+  name: c4_sweep_041
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_041.yaml
+  run_dir: runs/c4_random_sweep/run_041
+  seed: 20260661
+  beta_sig: 0.670348
+  mask_ratio: 0.6078
+  summary: beta_sig=0.6703; mask=0.608; rot=on; hflip=on; vflip=off; jitter=off; intensity=on
+- id: 42
+  name: c4_sweep_042
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_042.yaml
+  run_dir: runs/c4_random_sweep/run_042
+  seed: 20260662
+  beta_sig: 14.60241
+  mask_ratio: 0.3706
+  summary: beta_sig=14.6; mask=0.371; rot=on; hflip=on; vflip=off; jitter=on; intensity=on
+- id: 43
+  name: c4_sweep_043
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_043.yaml
+  run_dir: runs/c4_random_sweep/run_043
+  seed: 20260663
+  beta_sig: 30.88054
+  mask_ratio: 0.4621
+  summary: beta_sig=30.88; mask=0.462; rot=on; hflip=off; vflip=on; jitter=on; intensity=on
+- id: 44
+  name: c4_sweep_044
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_044.yaml
+  run_dir: runs/c4_random_sweep/run_044
+  seed: 20260664
+  beta_sig: 11.348135
+  mask_ratio: 0.3878
+  summary: beta_sig=11.35; mask=0.388; rot=on; hflip=off; vflip=off; jitter=on; intensity=off
+- id: 45
+  name: c4_sweep_045
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_045.yaml
+  run_dir: runs/c4_random_sweep/run_045
+  seed: 20260665
+  beta_sig: 29.839629
+  mask_ratio: 0.4014
+  summary: beta_sig=29.84; mask=0.401; rot=off; hflip=on; vflip=off; jitter=off; intensity=on
+- id: 46
+  name: c4_sweep_046
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_046.yaml
+  run_dir: runs/c4_random_sweep/run_046
+  seed: 20260666
+  beta_sig: 8.711133
+  mask_ratio: 0.8041
+  summary: beta_sig=8.711; mask=0.804; rot=on; hflip=on; vflip=off; jitter=off; intensity=on
+- id: 47
+  name: c4_sweep_047
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_047.yaml
+  run_dir: runs/c4_random_sweep/run_047
+  seed: 20260667
+  beta_sig: 14.98075
+  mask_ratio: 0.8426
+  summary: beta_sig=14.98; mask=0.843; rot=on; hflip=off; vflip=off; jitter=on; intensity=off
+- id: 48
+  name: c4_sweep_048
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_048.yaml
+  run_dir: runs/c4_random_sweep/run_048
+  seed: 20260668
+  beta_sig: 0.426779
+  mask_ratio: 0.4603
+  summary: beta_sig=0.4268; mask=0.460; rot=on; hflip=on; vflip=off; jitter=on; intensity=off
+- id: 49
+  name: c4_sweep_049
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_049.yaml
+  run_dir: runs/c4_random_sweep/run_049
+  seed: 20260669
+  beta_sig: 0.19625
+  mask_ratio: 0.4349
+  summary: beta_sig=0.1962; mask=0.435; rot=off; hflip=off; vflip=on; jitter=off;
+    intensity=off
+- id: 50
+  name: c4_sweep_050
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_050.yaml
+  run_dir: runs/c4_random_sweep/run_050
+  seed: 20260670
+  beta_sig: 2.436054
+  mask_ratio: 0.4707
+  summary: beta_sig=2.436; mask=0.471; rot=off; hflip=off; vflip=on; jitter=off; intensity=off
+- id: 51
+  name: c4_sweep_051
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_051.yaml
+  run_dir: runs/c4_random_sweep/run_051
+  seed: 20260671
+  beta_sig: 0.534942
+  mask_ratio: 0.692
+  summary: beta_sig=0.5349; mask=0.692; rot=off; hflip=off; vflip=off; jitter=off;
+    intensity=on
+- id: 52
+  name: c4_sweep_052
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_052.yaml
+  run_dir: runs/c4_random_sweep/run_052
+  seed: 20260672
+  beta_sig: 0.351013
+  mask_ratio: 0.3773
+  summary: beta_sig=0.351; mask=0.377; rot=on; hflip=on; vflip=on; jitter=off; intensity=on
+- id: 53
+  name: c4_sweep_053
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_053.yaml
+  run_dir: runs/c4_random_sweep/run_053
+  seed: 20260673
+  beta_sig: 0.145016
+  mask_ratio: 0.3582
+  summary: beta_sig=0.145; mask=0.358; rot=off; hflip=off; vflip=on; jitter=off; intensity=on
+- id: 54
+  name: c4_sweep_054
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_054.yaml
+  run_dir: runs/c4_random_sweep/run_054
+  seed: 20260674
+  beta_sig: 0.148587
+  mask_ratio: 0.5155
+  summary: beta_sig=0.1486; mask=0.516; rot=off; hflip=on; vflip=on; jitter=off; intensity=on
+- id: 55
+  name: c4_sweep_055
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_055.yaml
+  run_dir: runs/c4_random_sweep/run_055
+  seed: 20260675
+  beta_sig: 0.97649
+  mask_ratio: 0.4983
+  summary: beta_sig=0.9765; mask=0.498; rot=off; hflip=off; vflip=off; jitter=off;
+    intensity=on
+- id: 56
+  name: c4_sweep_056
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_056.yaml
+  run_dir: runs/c4_random_sweep/run_056
+  seed: 20260676
+  beta_sig: 85.048443
+  mask_ratio: 0.5848
+  summary: beta_sig=85.05; mask=0.585; rot=on; hflip=off; vflip=on; jitter=off; intensity=off
+- id: 57
+  name: c4_sweep_057
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_057.yaml
+  run_dir: runs/c4_random_sweep/run_057
+  seed: 20260677
+  beta_sig: 22.451081
+  mask_ratio: 0.4226
+  summary: beta_sig=22.45; mask=0.423; rot=off; hflip=on; vflip=on; jitter=on; intensity=on
+- id: 58
+  name: c4_sweep_058
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_058.yaml
+  run_dir: runs/c4_random_sweep/run_058
+  seed: 20260678
+  beta_sig: 92.869791
+  mask_ratio: 0.5584
+  summary: beta_sig=92.87; mask=0.558; rot=off; hflip=on; vflip=off; jitter=on; intensity=on
+- id: 59
+  name: c4_sweep_059
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_059.yaml
+  run_dir: runs/c4_random_sweep/run_059
+  seed: 20260679
+  beta_sig: 0.196997
+  mask_ratio: 0.5041
+  summary: beta_sig=0.197; mask=0.504; rot=off; hflip=off; vflip=on; jitter=off; intensity=on
+- id: 60
+  name: c4_sweep_060
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_060.yaml
+  run_dir: runs/c4_random_sweep/run_060
+  seed: 20260680
+  beta_sig: 3.117799
+  mask_ratio: 0.5709
+  summary: beta_sig=3.118; mask=0.571; rot=on; hflip=off; vflip=on; jitter=on; intensity=on
+- id: 61
+  name: c4_sweep_061
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_061.yaml
+  run_dir: runs/c4_random_sweep/run_061
+  seed: 20260681
+  beta_sig: 13.826485
+  mask_ratio: 0.5355
+  summary: beta_sig=13.83; mask=0.536; rot=on; hflip=off; vflip=on; jitter=off; intensity=off
+- id: 62
+  name: c4_sweep_062
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_062.yaml
+  run_dir: runs/c4_random_sweep/run_062
+  seed: 20260682
+  beta_sig: 4.226022
+  mask_ratio: 0.6325
+  summary: beta_sig=4.226; mask=0.632; rot=off; hflip=on; vflip=off; jitter=on; intensity=off
+- id: 63
+  name: c4_sweep_063
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_063.yaml
+  run_dir: runs/c4_random_sweep/run_063
+  seed: 20260683
+  beta_sig: 12.139893
+  mask_ratio: 0.8472
+  summary: beta_sig=12.14; mask=0.847; rot=off; hflip=off; vflip=on; jitter=on; intensity=on
+- id: 64
+  name: c4_sweep_064
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_064.yaml
+  run_dir: runs/c4_random_sweep/run_064
+  seed: 20260684
+  beta_sig: 10.11225
+  mask_ratio: 0.7926
+  summary: beta_sig=10.11; mask=0.793; rot=off; hflip=off; vflip=on; jitter=off; intensity=on
+- id: 65
+  name: c4_sweep_065
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_065.yaml
+  run_dir: runs/c4_random_sweep/run_065
+  seed: 20260685
+  beta_sig: 12.779452
+  mask_ratio: 0.3502
+  summary: beta_sig=12.78; mask=0.350; rot=off; hflip=on; vflip=on; jitter=off; intensity=on
+- id: 66
+  name: c4_sweep_066
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_066.yaml
+  run_dir: runs/c4_random_sweep/run_066
+  seed: 20260686
+  beta_sig: 26.117758
+  mask_ratio: 0.3712
+  summary: beta_sig=26.12; mask=0.371; rot=on; hflip=off; vflip=on; jitter=on; intensity=on
+- id: 67
+  name: c4_sweep_067
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_067.yaml
+  run_dir: runs/c4_random_sweep/run_067
+  seed: 20260687
+  beta_sig: 4.605882
+  mask_ratio: 0.5201
+  summary: beta_sig=4.606; mask=0.520; rot=off; hflip=on; vflip=on; jitter=on; intensity=off
+- id: 68
+  name: c4_sweep_068
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_068.yaml
+  run_dir: runs/c4_random_sweep/run_068
+  seed: 20260688
+  beta_sig: 31.213262
+  mask_ratio: 0.6741
+  summary: beta_sig=31.21; mask=0.674; rot=off; hflip=on; vflip=off; jitter=off; intensity=on
+- id: 69
+  name: c4_sweep_069
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_069.yaml
+  run_dir: runs/c4_random_sweep/run_069
+  seed: 20260689
+  beta_sig: 5.685299
+  mask_ratio: 0.461
+  summary: beta_sig=5.685; mask=0.461; rot=off; hflip=on; vflip=on; jitter=on; intensity=off
+- id: 70
+  name: c4_sweep_070
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_070.yaml
+  run_dir: runs/c4_random_sweep/run_070
+  seed: 20260690
+  beta_sig: 23.770551
+  mask_ratio: 0.5004
+  summary: beta_sig=23.77; mask=0.500; rot=off; hflip=off; vflip=off; jitter=on; intensity=on
+- id: 71
+  name: c4_sweep_071
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_071.yaml
+  run_dir: runs/c4_random_sweep/run_071
+  seed: 20260691
+  beta_sig: 0.341108
+  mask_ratio: 0.529
+  summary: beta_sig=0.3411; mask=0.529; rot=off; hflip=off; vflip=on; jitter=on; intensity=on
+- id: 72
+  name: c4_sweep_072
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_072.yaml
+  run_dir: runs/c4_random_sweep/run_072
+  seed: 20260692
+  beta_sig: 5.912071
+  mask_ratio: 0.7357
+  summary: beta_sig=5.912; mask=0.736; rot=on; hflip=off; vflip=off; jitter=on; intensity=off
+- id: 73
+  name: c4_sweep_073
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_073.yaml
+  run_dir: runs/c4_random_sweep/run_073
+  seed: 20260693
+  beta_sig: 5.116583
+  mask_ratio: 0.3946
+  summary: beta_sig=5.117; mask=0.395; rot=on; hflip=on; vflip=off; jitter=on; intensity=on
+- id: 74
+  name: c4_sweep_074
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_074.yaml
+  run_dir: runs/c4_random_sweep/run_074
+  seed: 20260694
+  beta_sig: 0.812451
+  mask_ratio: 0.7158
+  summary: beta_sig=0.8125; mask=0.716; rot=on; hflip=off; vflip=on; jitter=on; intensity=off
+- id: 75
+  name: c4_sweep_075
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_075.yaml
+  run_dir: runs/c4_random_sweep/run_075
+  seed: 20260695
+  beta_sig: 0.355652
+  mask_ratio: 0.838
+  summary: beta_sig=0.3557; mask=0.838; rot=on; hflip=on; vflip=on; jitter=on; intensity=on
+- id: 76
+  name: c4_sweep_076
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_076.yaml
+  run_dir: runs/c4_random_sweep/run_076
+  seed: 20260696
+  beta_sig: 4.195545
+  mask_ratio: 0.3862
+  summary: beta_sig=4.196; mask=0.386; rot=on; hflip=on; vflip=on; jitter=off; intensity=off
+- id: 77
+  name: c4_sweep_077
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_077.yaml
+  run_dir: runs/c4_random_sweep/run_077
+  seed: 20260697
+  beta_sig: 87.950176
+  mask_ratio: 0.7902
+  summary: beta_sig=87.95; mask=0.790; rot=on; hflip=on; vflip=on; jitter=on; intensity=on
+- id: 78
+  name: c4_sweep_078
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_078.yaml
+  run_dir: runs/c4_random_sweep/run_078
+  seed: 20260698
+  beta_sig: 10.385503
+  mask_ratio: 0.8317
+  summary: beta_sig=10.39; mask=0.832; rot=off; hflip=off; vflip=on; jitter=on; intensity=off
+- id: 79
+  name: c4_sweep_079
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_079.yaml
+  run_dir: runs/c4_random_sweep/run_079
+  seed: 20260699
+  beta_sig: 0.735799
+  mask_ratio: 0.8244
+  summary: beta_sig=0.7358; mask=0.824; rot=off; hflip=on; vflip=off; jitter=off;
+    intensity=on
+- id: 80
+  name: c4_sweep_080
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_080.yaml
+  run_dir: runs/c4_random_sweep/run_080
+  seed: 20260700
+  beta_sig: 12.7442
+  mask_ratio: 0.7482
+  summary: beta_sig=12.74; mask=0.748; rot=on; hflip=off; vflip=on; jitter=off; intensity=off
+- id: 81
+  name: c4_sweep_081
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_081.yaml
+  run_dir: runs/c4_random_sweep/run_081
+  seed: 20260701
+  beta_sig: 8.261475
+  mask_ratio: 0.4409
+  summary: beta_sig=8.261; mask=0.441; rot=on; hflip=off; vflip=off; jitter=on; intensity=on
+- id: 82
+  name: c4_sweep_082
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_082.yaml
+  run_dir: runs/c4_random_sweep/run_082
+  seed: 20260702
+  beta_sig: 32.790288
+  mask_ratio: 0.8331
+  summary: beta_sig=32.79; mask=0.833; rot=off; hflip=on; vflip=off; jitter=off; intensity=on
+- id: 83
+  name: c4_sweep_083
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_083.yaml
+  run_dir: runs/c4_random_sweep/run_083
+  seed: 20260703
+  beta_sig: 0.114587
+  mask_ratio: 0.7967
+  summary: beta_sig=0.1146; mask=0.797; rot=off; hflip=on; vflip=on; jitter=on; intensity=off
+- id: 84
+  name: c4_sweep_084
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_084.yaml
+  run_dir: runs/c4_random_sweep/run_084
+  seed: 20260704
+  beta_sig: 0.447408
+  mask_ratio: 0.5874
+  summary: beta_sig=0.4474; mask=0.587; rot=on; hflip=on; vflip=on; jitter=off; intensity=off
+- id: 85
+  name: c4_sweep_085
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_085.yaml
+  run_dir: runs/c4_random_sweep/run_085
+  seed: 20260705
+  beta_sig: 0.840246
+  mask_ratio: 0.7799
+  summary: beta_sig=0.8402; mask=0.780; rot=on; hflip=on; vflip=off; jitter=off; intensity=off
+- id: 86
+  name: c4_sweep_086
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_086.yaml
+  run_dir: runs/c4_random_sweep/run_086
+  seed: 20260706
+  beta_sig: 3.552485
+  mask_ratio: 0.688
+  summary: beta_sig=3.552; mask=0.688; rot=off; hflip=off; vflip=on; jitter=off; intensity=on
+- id: 87
+  name: c4_sweep_087
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_087.yaml
+  run_dir: runs/c4_random_sweep/run_087
+  seed: 20260707
+  beta_sig: 16.736437
+  mask_ratio: 0.7535
+  summary: beta_sig=16.74; mask=0.753; rot=off; hflip=on; vflip=on; jitter=off; intensity=on
+- id: 88
+  name: c4_sweep_088
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_088.yaml
+  run_dir: runs/c4_random_sweep/run_088
+  seed: 20260708
+  beta_sig: 12.317349
+  mask_ratio: 0.5563
+  summary: beta_sig=12.32; mask=0.556; rot=off; hflip=off; vflip=off; jitter=on; intensity=off
+- id: 89
+  name: c4_sweep_089
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_089.yaml
+  run_dir: runs/c4_random_sweep/run_089
+  seed: 20260709
+  beta_sig: 5.086886
+  mask_ratio: 0.5611
+  summary: beta_sig=5.087; mask=0.561; rot=off; hflip=on; vflip=off; jitter=off; intensity=off
+- id: 90
+  name: c4_sweep_090
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_090.yaml
+  run_dir: runs/c4_random_sweep/run_090
+  seed: 20260710
+  beta_sig: 13.625281
+  mask_ratio: 0.7593
+  summary: beta_sig=13.63; mask=0.759; rot=on; hflip=on; vflip=off; jitter=off; intensity=on
+- id: 91
+  name: c4_sweep_091
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_091.yaml
+  run_dir: runs/c4_random_sweep/run_091
+  seed: 20260711
+  beta_sig: 1.938587
+  mask_ratio: 0.6522
+  summary: beta_sig=1.939; mask=0.652; rot=on; hflip=on; vflip=on; jitter=off; intensity=on
+- id: 92
+  name: c4_sweep_092
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_092.yaml
+  run_dir: runs/c4_random_sweep/run_092
+  seed: 20260712
+  beta_sig: 0.499718
+  mask_ratio: 0.5645
+  summary: beta_sig=0.4997; mask=0.565; rot=on; hflip=off; vflip=off; jitter=off;
+    intensity=on
+- id: 93
+  name: c4_sweep_093
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_093.yaml
+  run_dir: runs/c4_random_sweep/run_093
+  seed: 20260713
+  beta_sig: 0.194414
+  mask_ratio: 0.5215
+  summary: beta_sig=0.1944; mask=0.521; rot=off; hflip=on; vflip=on; jitter=on; intensity=on
+- id: 94
+  name: c4_sweep_094
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_094.yaml
+  run_dir: runs/c4_random_sweep/run_094
+  seed: 20260714
+  beta_sig: 0.99762
+  mask_ratio: 0.5378
+  summary: beta_sig=0.9976; mask=0.538; rot=off; hflip=on; vflip=off; jitter=off;
+    intensity=on
+- id: 95
+  name: c4_sweep_095
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_095.yaml
+  run_dir: runs/c4_random_sweep/run_095
+  seed: 20260715
+  beta_sig: 2.401431
+  mask_ratio: 0.3682
+  summary: beta_sig=2.401; mask=0.368; rot=on; hflip=on; vflip=off; jitter=on; intensity=on
+- id: 96
+  name: c4_sweep_096
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_096.yaml
+  run_dir: runs/c4_random_sweep/run_096
+  seed: 20260716
+  beta_sig: 47.887029
+  mask_ratio: 0.832
+  summary: beta_sig=47.89; mask=0.832; rot=on; hflip=on; vflip=off; jitter=on; intensity=off
+- id: 97
+  name: c4_sweep_097
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_097.yaml
+  run_dir: runs/c4_random_sweep/run_097
+  seed: 20260717
+  beta_sig: 5.448164
+  mask_ratio: 0.4797
+  summary: beta_sig=5.448; mask=0.480; rot=off; hflip=off; vflip=off; jitter=off;
+    intensity=off
+- id: 98
+  name: c4_sweep_098
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_098.yaml
+  run_dir: runs/c4_random_sweep/run_098
+  seed: 20260718
+  beta_sig: 0.581562
+  mask_ratio: 0.5089
+  summary: beta_sig=0.5816; mask=0.509; rot=on; hflip=on; vflip=on; jitter=on; intensity=on
+- id: 99
+  name: c4_sweep_099
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_099.yaml
+  run_dir: runs/c4_random_sweep/run_099
+  seed: 20260719
+  beta_sig: 13.717752
+  mask_ratio: 0.5173
+  summary: beta_sig=13.72; mask=0.517; rot=off; hflip=off; vflip=off; jitter=off;
+    intensity=off
+- id: 100
+  name: c4_sweep_100
+  yaml_path: configs/swinjepa/sweeps/c4_random/jobs/run_100.yaml
+  run_dir: runs/c4_random_sweep/run_100
+  seed: 20260720
+  beta_sig: 68.66901
+  mask_ratio: 0.6212
+  summary: beta_sig=68.67; mask=0.621; rot=off; hflip=on; vflip=off; jitter=off; intensity=on

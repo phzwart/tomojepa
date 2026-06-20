@@ -1,7 +1,7 @@
 """Intrinsic validation for Swin multi-scale latent-JEPA checkpoints (no labels).
 
 For each ``ckpt_epoch_*.pth`` in a run directory, loads the encoder and reports
-per-stage metrics on the backbone (what downstream ViT-Up consumes):
+per-stage metrics on the **regularized lateral latent** (what SIGReg/JEPA shape):
 
   - token_effrank/s* : effective rank of within-image stage tokens (collapse /
                        spatial diversity; higher = more dimensions in use).
@@ -88,8 +88,10 @@ def eval_encoder_ckpt(ckpt_path, enc: SwinMSEncoder, ds_aug, idxs: List[int],
         views = views.to(device)
         fg_views = fg_views.to(device) if fg_views is not None else None
 
-        f0 = enc.extract_features(views[0:1], normalize=True, project=False)
-        f1 = enc.extract_features(views[1:2], normalize=True, project=False)
+        f0 = enc.extract_features(views[0:1], normalize=True, project=False,
+                                  use_latent=True)
+        f1 = enc.extract_features(views[1:2], normalize=True, project=False,
+                                  use_latent=True)
         fg0 = _fg_stages_from_px(fg_views[0:1], enc, fg_coverage) if fg_views is not None else None
         fg1 = _fg_stages_from_px(fg_views[1:2], enc, fg_coverage) if fg_views is not None else None
 
@@ -185,7 +187,9 @@ def main():
         data_dir=args.data_dir, dataset_key=args.dataset_key, pattern=args.pattern,
         global_views=2, local_views=0, variant=args.augment, img_size=cfg.img_size,
         is_train=True, backend=args.backend, crop_mode=args.crop_mode,
-        foreground_mask=cfg.foreground_mask, fg_std_thresh=cfg.fg_std_thresh,
+        foreground_mask=cfg.foreground_mask, fg_mode=cfg.fg_mode,
+        fg_std_thresh=cfg.fg_std_thresh,
+        fg_circle_diameter_frac=cfg.fg_circle_diameter_frac,
         fg_key=cfg.fg_key or None,
     )
     rng = np.random.default_rng(args.seed)
@@ -208,7 +212,9 @@ def main():
             data_dir=args.data_dir, dataset_key=args.dataset_key, pattern=args.pattern,
             global_views=1, local_views=0, variant=args.augment, img_size=cfg.img_size,
             is_train=True, backend=args.backend, crop_mode=args.crop_mode,
-            foreground_mask=cfg.foreground_mask, fg_std_thresh=cfg.fg_std_thresh,
+            foreground_mask=cfg.foreground_mask, fg_mode=cfg.fg_mode,
+            fg_std_thresh=cfg.fg_std_thresh,
+            fg_circle_diameter_frac=cfg.fg_circle_diameter_frac,
             fg_key=cfg.fg_key or None,
         )
         eval_n = min(len(ds_eval), args.eval_batches * max(1, args.eval_batch_size or cfg.batch_size))
@@ -231,7 +237,8 @@ def main():
         enc.eval()
         item = ds_aug[idxs[0]]
         v = item[0][0:1].to(device) if isinstance(item, (tuple, list)) else item[0:1].to(device)
-        feats = enc.extract_features(v, normalize=True, project=False)
+        feats = enc.extract_features(v, normalize=True, project=False,
+                                     use_latent=True)
         m.update(stage_feature_diagnostics(feats))
         if pred_loader is not None and model is not None:
             m.update(eval_pred_ckpt(c, model, pred_loader, device, total_steps))

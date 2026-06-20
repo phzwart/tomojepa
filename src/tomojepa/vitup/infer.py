@@ -165,14 +165,13 @@ def tiled_upsample(vitup, cfg, img, window=256, step=192, border=32,
         want_low: also return the stitched last-layer backbone grid (token res).
     Returns ``(dense [H,W,Cf], low [H/p,W/p,C] | None)``.
     """
-    from qlty import NCYXQuilt
+    from ..core.tiling import pixel_quilt, token_quilt, unstitch_tiles, stitch_maps
 
     device = img.device
     _, _, H, W = img.shape
     p = vitup.adapter.p
-    quilt = NCYXQuilt(Y=H, X=W, window=(window, window), step=(step, step),
-                      border=(border, border), border_weight=border_weight)
-    tiles = quilt.unstitch(img.detach().cpu())                 # [M,Cin,window,window]
+    quilt = pixel_quilt(H, W, window, step, border, border_weight)
+    tiles = unstitch_tiles(quilt, img)                           # [M,Cin,window,window]
     aenabled = amp and device.type == "cuda"
 
     dense_tiles, low_tiles = [], []
@@ -184,19 +183,13 @@ def tiled_upsample(vitup, cfg, img, window=256, step=192, border=32,
         if want_low:
             low_tiles.append(lo.float().permute(2, 0, 1).cpu())
 
-    dense_full, _ = quilt.stitch(torch.stack(dense_tiles))     # [1,Cf,H,W]
-    dense_full = dense_full[0].permute(1, 2, 0).contiguous()   # [H,W,Cf]
+    dense_full = stitch_maps(quilt, dense_tiles).permute(1, 2, 0).contiguous()  # [H,W,Cf]
     if not want_low:
         return dense_full, None
 
-    # Stitch the low-res backbone grids on the matching token-scale quilt.
-    g = window // p
-    lquilt = NCYXQuilt(Y=H // p, X=W // p, window=(g, g),
-                       step=(step // p, step // p),
-                       border=(max(1, border // p), max(1, border // p)),
-                       border_weight=border_weight)
-    low_full, _ = lquilt.stitch(torch.stack(low_tiles))        # [1,C,H/p,W/p]
-    return dense_full, low_full[0].permute(1, 2, 0).contiguous()
+    lquilt = token_quilt(H, W, window, step, border, p, border_weight)
+    low_full = stitch_maps(lquilt, low_tiles).permute(1, 2, 0).contiguous()
+    return dense_full, low_full
 
 
 def _component_grid(n_comp, comp_cols=0):

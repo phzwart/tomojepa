@@ -115,12 +115,37 @@ def test_bg_tokens_fixed_at_every_stage():
 def test_mask_fov_restricted():
     """Masked s4 cells lie inside fg_s4; counts match k_eff across the batch."""
     torch.manual_seed(0)
+    for mode in ("random_cell", "block"):
+        gen = MultiScaleBlockMask(
+            grid4=(4, 4), num_stages=4, mask_ratio=0.55, mask_mode=mode)
+        fg_s4 = torch.zeros(5, 4, 4, dtype=torch.bool)
+        fg_s4[:, 1:3, 1:3] = True                          # 2x2 FG patch per sample
+        mask = gen.generate(5, fg_s4=fg_s4)
+        assert_mask_consistency(mask, num_stages=4)
+        k_eff = gen._effective_k(fg_s4)
+        counts = mask["s4"].flatten(1).sum(1)
+        assert (counts == k_eff).all()
+        assert not (mask["s4"] & ~fg_s4).any()
+
+
+def test_mask_batch_constant_uneven_fg():
+    """Uneven per-image FG still yields batch-constant masked counts."""
+    from tomojepa.swinjepa.losses import gather_masked
+
+    torch.manual_seed(0)
     gen = MultiScaleBlockMask(grid4=(4, 4), num_stages=4, mask_ratio=0.55)
-    fg_s4 = torch.zeros(5, 4, 4, dtype=torch.bool)
-    fg_s4[:, 1:3, 1:3] = True                          # 2x2 FG patch per sample
-    mask = gen.generate(5, fg_s4=fg_s4)
-    assert_mask_consistency(mask, num_stages=4)
-    k_eff = gen._effective_k(fg_s4)
-    counts = mask["s4"].flatten(1).sum(1)
-    assert (counts == k_eff).all()
-    assert not (mask["s4"] & ~fg_s4).any()
+    fg_s4 = torch.zeros(4, 4, 4, dtype=torch.bool)
+    fg_s4[0, 1:4, 1:4] = True                            # 3x3 large FG
+    fg_s4[1, 2:3, 2:4] = True                            # tiny 1x2 FG
+    fg_s4[2, 0:2, 0:3] = True
+    fg_s4[3, 1:3, 2:4] = True
+    for mode in ("random_cell", "block"):
+        g = MultiScaleBlockMask(
+            grid4=(4, 4), num_stages=4, mask_ratio=0.55, mask_mode=mode)
+        mask = g.generate(4, fg_s4=fg_s4)
+        counts = mask["s4"].flatten(1).sum(1)
+        assert counts.min() == counts.max()
+        feat = torch.randn(4, 8, 4, 4)
+        out = gather_masked(feat, mask["s4"])
+        assert out.shape[0] == 4
+        assert out.shape[1] == int(counts[0])

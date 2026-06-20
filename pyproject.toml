@@ -31,6 +31,7 @@ dependencies = [
     "zarr>=2.16",
     "tqdm>=4.65",
     "matplotlib>=3.7",
+    "pyyaml>=6.0",
     "typer>=0.12",
 ]
 

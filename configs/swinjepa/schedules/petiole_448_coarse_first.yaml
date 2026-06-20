@@ -1,0 +1,56 @@
+# Aggressive coarse-first schedule: 25% progress blocks **within each epoch**.
+#
+# progress_scope: epoch  ->  progress = (step % steps_per_epoch) / steps_per_epoch
+# Freezes reset at the start of every epoch so the full block cycle repeats.
+#
+# Block 0 (0–25%):   s4 only  -> freeze s4 @ 25%
+# Block 1 (25–50%):  +s3      -> freeze s3 @ 50%
+# Block 2 (50–75%):  +s2      -> freeze s2 @ 75%
+# Block 3 (75–100%): +s1      (s2–s4 stay frozen; s1 never frozen)
+#
+# 172 steps/epoch @ 448: freezes ~step 43, 86, 129 each epoch.
+
+name: petiole_448_coarse_first_25pct
+progress_scope: epoch
+
+stages:
+  s4:
+    active:
+      - {progress: 0.00, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.01}
+    freeze:
+      - {progress: 0.00, value: false}
+      - {progress: 0.25, value: true}
+
+  s3:
+    active:
+      - {progress: 0.00, value: 0.1}
+      - {progress: 0.25, value: 0.1}
+      - {progress: 0.50, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.05}
+    freeze:
+      - {progress: 0.00, value: false}
+      - {progress: 0.50, value: true}
+
+  s2:
+    active:
+      - {progress: 0.00, value: 0.1}
+      - {progress: 0.50, value: 0.1}
+      - {progress: 0.75, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.05}
+    freeze:
+      - {progress: 0.00, value: false}
+      - {progress: 0.75, value: true}
+
+  s1:
+    active:
+      - {progress: 0.00, value: 0.1}
+      - {progress: 0.75, value: 0.1}
+      - {progress: 1.00, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.05}
+    freeze:
+      - {progress: 0.00, value: false}

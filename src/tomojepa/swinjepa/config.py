@@ -12,6 +12,7 @@ map cleanly onto ``argparse`` ``nargs``.
 """
 from dataclasses import dataclass, fields, MISSING
 from typing import List, Tuple
+import warnings
 
 
 @dataclass
@@ -25,7 +26,7 @@ class SwinMSJEPAConfig:
     rope_theta: float = 100.0                   # RoPE frequency base
 
     # ---- mask (defined on the stage-4 grid) -------------------------------
-    mask_ratio: float = 0.55
+    mask_ratio: float = 0.75
     mask_mode: str = "random_cell"            # random_cell | block
     mask_num_blocks: int = 4                  # block mode
     block_scale_range: Tuple[float, float] = (0.1, 0.4)
@@ -52,6 +53,11 @@ class SwinMSJEPAConfig:
     # coarse_in = s4 (lowest res) first, then coarse_ramp_stages stir in.
     stage_curriculum: str = "coarse_in"        # fine_in | coarse_in
     coarse_ramp_stages: Tuple[int, ...] = (3, 2, 1)   # 1-based, after s4
+    # Per-stage freeze epoch (s1..s4, 0=never). When ``epoch >= N``, that stage
+    # stops receiving loss (pred / SIGReg / coarse MAE), its lateral conv is
+    # frozen, and student/target latents are detached on that stage. Mirror
+    # coarse_in: e.g. ``(0, 0, 0, 5)`` locks coarse after epoch 5.
+    freeze_after_epoch: Tuple[int, ...] = (0, 0, 0, 0)
     # 1-based stage ids that are *fine* (fine_in mode only).
     fine_stages: Tuple[int, ...] = (1, 2)
 
@@ -61,22 +67,32 @@ class SwinMSJEPAConfig:
 
     # ---- SIGReg (per stage) -----------------------------------------------
     # Per-stage SIGReg weight (s1..s4). Legacy: scales token SIGReg at each E_s.
-    # Pyramid: s4 weights C4; s1..s3 weight R1..R3. Lower s4 lets MAE shape C4.
+    # Pyramid: s4 weights S4-S3 at s4 grid; s3..s1 weight R3..R1 band residuals.
+    # NOTE: beta_sig scale differs between legacy (per-token) and pyramid (per-slice)
+    # SIGReg paths -- values are not comparable across legacy_jepa modes.
     beta_sig: Tuple[float, ...] = (0.05, 0.05, 0.05, 0.01)
-    sigreg_n_dirs: Tuple[int, ...] = (256, 256, 384, 512)
+    sigreg_n_dirs: Tuple[int, ...] = (64, 64, 64, 64)  # bounded by lat_dims[s]
     sigreg_knots: int = 17                      # CF quadrature knots (repo SIGReg)
     sigreg_t_max: float = 3.0                   # CF quadrature range (repo SIGReg)
     sigreg_w_mean: float = 0.1                  # light explicit mean penalty
     sigreg_n_tokens_cap: int = 4096             # legacy token cap (0 = use all)
-    sigreg_tokens_per_slice: int = 32           # pyramid: FG tokens subsampled per image
+    sigreg_tokens_per_slice: int = 32           # pyramid: FG tokens per image on s4 (0 = all s4 FG)
+    sigreg_token_frac: float = 0.0              # >0: subsample this frac of s4 grid per slice (overrides tok=0)
     sigreg_min_token_dist: int = 2              # min Chebyshev grid dist (0 = random)
     sigreg_queue_len: int = 512                 # FIFO queue length (slices, not pooled rows)
+    sigreg_cap_dirs_by_rank: bool = False        # cap n_dirs by batch effective rank
+    sigreg_min_dirs: int = 16                   # floor on projection directions
     sigreg_scale: Tuple[float, ...] = (1.0, 1.0, 1.0, 1.0)   # scale_s
     sigreg_rebalance_by_dim: bool = False       # multiply scale_s by 1/C_s
 
+    # ---- pyramid residual parent definition --------------------------------
+    strict_laplacian: bool = False               # pool(child) parents when True
+
     # ---- foreground FOV mask (training-only) ------------------------------
     foreground_mask: bool = False
-    fg_std_thresh: float = 0.05                 # intensity-variation threshold
+    fg_mode: str = "std"                        # std | circle (geometric FOV disk)
+    fg_std_thresh: float = 0.05                 # std mode: intensity-variation threshold
+    fg_circle_diameter_frac: float = 1.0        # circle: diameter = frac * image width
     fg_coverage: float = 0.01                   # min FG fraction per token footprint
     fg_key: str = ""                            # optional precomputed mask array key
 
@@ -88,7 +104,7 @@ class SwinMSJEPAConfig:
     epochs: int = 100
     batch_size: int = 16
     lr: float = 1.5e-4
-    weight_decay: float = 0.05
+    weight_decay: float = 0.05                 # AdamW decoupled weight decay
     beta1: float = 0.9
     beta2: float = 0.95
     warmup_pct: float = 0.10
@@ -125,6 +141,33 @@ class SwinMSJEPAConfig:
             raise ValueError(
                 f"beta_sig must have {self.num_stages} entries (s1..s4), "
                 f"got {len(self.beta_sig)}: {self.beta_sig}")
+        if len(self.sigreg_n_dirs) == 1:
+            self.sigreg_n_dirs = self.sigreg_n_dirs * self.num_stages
+        if len(self.sigreg_n_dirs) != self.num_stages:
+            raise ValueError(
+                f"sigreg_n_dirs must have {self.num_stages} entries (s1..s4), "
+                f"got {len(self.sigreg_n_dirs)}: {self.sigreg_n_dirs}")
+        clamped = tuple(min(d, c) for d, c in zip(self.sigreg_n_dirs, self.lat_dims))
+        if clamped != self.sigreg_n_dirs:
+            warnings.warn(
+                f"sigreg_n_dirs {self.sigreg_n_dirs} exceeds lat_dims {self.lat_dims}; "
+                f"clamping to {clamped}",
+                stacklevel=2)
+            self.sigreg_n_dirs = clamped
+        if self.fg_mode not in ("std", "circle"):
+            raise ValueError(f"fg_mode must be 'std' or 'circle', got {self.fg_mode!r}")
+        if self.fg_circle_diameter_frac <= 0:
+            raise ValueError(
+                f"fg_circle_diameter_frac must be positive, got {self.fg_circle_diameter_frac}")
+        if len(self.freeze_after_epoch) == 1:
+            self.freeze_after_epoch = self.freeze_after_epoch * self.num_stages
+        if len(self.freeze_after_epoch) != self.num_stages:
+            raise ValueError(
+                f"freeze_after_epoch must have {self.num_stages} entries (s1..s4), "
+                f"got {len(self.freeze_after_epoch)}: {self.freeze_after_epoch}")
+        if any(e < 0 for e in self.freeze_after_epoch):
+            raise ValueError(
+                f"freeze_after_epoch entries must be non-negative, got {self.freeze_after_epoch}")
 
 
 # Tuple-valued fields take ``nargs`` from argparse; map element types here.
@@ -133,6 +176,7 @@ _TUPLE_ELEM_TYPE = {
     "stage_base_weights": float,
     "fine_stages": int,
     "coarse_ramp_stages": int,
+    "freeze_after_epoch": int,
     "sigreg_n_dirs": int,
     "sigreg_scale": float,
     "beta_sig": float,

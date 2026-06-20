@@ -1,0 +1,64 @@
+name: c4_sweep_050
+run:
+  epochs: 10
+  mask_ratio: 0.4707
+  seed: 20260670
+stages:
+  s1:
+    active: &id001
+    - progress: 0.0
+      value: 0.0
+    beta_sig: &id002
+    - progress: 0.0
+      value: 0.0
+    freeze: &id003
+    - progress: 0.0
+      value: false
+  s2:
+    active: *id001
+    beta_sig: *id002
+    freeze: *id003
+  s3:
+    active: *id001
+    beta_sig: *id002
+    freeze: *id003
+  s4:
+    active:
+    - progress: 0.0
+      value: 1.0
+    beta_sig:
+    - progress: 0.0
+      value: 2.436054
+    freeze:
+    - progress: 0.0
+      value: false
+augmentations:
+  variant: tomo2
+  crop_mode: resize
+  global_views: 1
+  local_views: 0
+  random_rotate_deg: 0.0
+  resize_jitter: null
+  hflip_p: 0.0
+  vflip_p: 0.5
+  intensity_augment: false
+  window:
+    p_low: 0.01
+    p_high: 0.99
+    sample_size: 100000
+  blur:
+    kernel_size: 7
+    sigma:
+    - 0.1
+    - 1.0
+    p: 0.0
+  poisson:
+    scale: 10000
+    p: 0.0
+  pixel_mask:
+    ratio: 0.15
+    p: 0.0
+  normalize:
+    mean: 0.5
+    std: 0.5
+  equalize_p: 0.0
