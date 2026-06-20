@@ -1,16 +1,9 @@
-# Isolate C4-only training: MAE + SIGReg on s4 only (pyramid base at coarse stage).
+# Isolate C4-only with SIGReg on C4 (CoarseMIMHead output) instead of E4.
 #
-# Pair with CLI:
-#   --stage_base_weights 0 0 0 1
-#   --sigreg_s4_on e4
-#   --predictor_enabled false
-#   --sigreg_queue_len 2048 --sigreg_tokens_per_slice 0
-#
-# s4 SIGReg regularizes the coarse base latent (E4 by default via sigreg_s4_on).
-# Finer stages (when enabled) use hierarchical residuals R3..R1.
-# sigreg_tokens_per_slice 0 uses all FG tokens on the s4 grid (~49 at 448/resize).
+# Ablation of isolate_c4_sigreg.yaml -- same stage schedule, use:
+#   --sigreg_s4_on c4
 
-name: isolate_c4_sigreg
+name: isolate_c4_sigreg_c4
 
 stages:
   s1:

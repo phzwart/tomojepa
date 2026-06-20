@@ -5,7 +5,7 @@ from tomojepa.swinjepa.mask import MultiScaleBlockMask
 from tomojepa.swinjepa.model import SwinMSJEPA
 from tomojepa.swinjepa.pyramid import (
     CoarseMIMHead, hierarchical_residuals, reconstruct_from_residuals,
-    upsample_stage, pyramid_band_residuals,
+    upsample_stage, pyramid_band_residuals, pyramid_sigreg_features,
 )
 from tomojepa.swinjepa.sigreg import ImageGroupedStageSIGReg, PooledStageSIGReg
 from .conftest import small_cfg
@@ -202,6 +202,55 @@ def test_pyramid_band_residuals_keys():
         assert torch.allclose(bands[key], R[key])
     e3_at_s4 = torch.nn.functional.adaptive_avg_pool2d(E["s3"], grids[3])
     assert torch.allclose(bands["s4"], E["s4"] - e3_at_s4)
+
+
+def test_pyramid_sigreg_features_s4_e4():
+    torch.manual_seed(0)
+    grids = [(16, 16), (8, 8), (4, 4), (2, 2)]
+    E = {f"s{i + 1}": torch.randn(1, 8, *grids[i]) for i in range(4)}
+    C4 = torch.randn(1, 8, 2, 2)
+    feats = pyramid_sigreg_features(E, C4, grids, s4_on="e4")
+    assert set(feats) == {"s1", "s2", "s3", "s4"}
+    assert torch.allclose(feats["s4"], E["s4"])
+    e3_at_s4 = torch.nn.functional.adaptive_avg_pool2d(E["s3"], grids[3])
+    assert not torch.allclose(feats["s4"], E["s4"] - e3_at_s4)
+    R = hierarchical_residuals(E, C4, grids)
+    for key in ("s1", "s2", "s3"):
+        assert torch.allclose(feats[key], R[key])
+
+
+def test_pyramid_sigreg_features_s4_c4():
+    torch.manual_seed(0)
+    grids = [(16, 16), (8, 8), (4, 4), (2, 2)]
+    E = {f"s{i + 1}": torch.randn(1, 8, *grids[i]) for i in range(4)}
+    C4 = torch.randn(1, 8, 2, 2)
+    feats = pyramid_sigreg_features(E, C4, grids, s4_on="c4")
+    assert torch.allclose(feats["s4"], C4)
+
+
+def test_s4_isolate_sigreg_on_e4():
+    """s4-only weights: pred off, SIGReg on E4 base, MAE on."""
+    torch.manual_seed(0)
+    cfg = small_cfg(
+        stage_base_weights=(0.0, 0.0, 0.0, 1.0),
+        beta_sig=(0.0, 0.0, 0.0, 1.0),
+        sigreg_s4_on="e4",
+        sigreg_queue_len=0,
+        predictor_enabled=False,
+    )
+    model = SwinMSJEPA(cfg)
+    x = torch.randn(2, 1, 64, 64)
+    loss, logs = model.compute_loss(x, step=0, total_steps=10)
+    assert torch.isfinite(loss)
+    assert logs["l_pred"] == 0.0
+    assert logs["l_sig"] > 0
+    assert logs["l_mae"] > 0
+    assert logs["effrank/s4"] >= 0
+    assert logs["effrank/C4"] >= 0
+    model.zero_grad(set_to_none=True)
+    loss.backward()
+    w = model.lateral["s4"].weight.grad
+    assert w is not None and float(w.norm()) > 0
 
 
 def test_pyramid_compute_loss():

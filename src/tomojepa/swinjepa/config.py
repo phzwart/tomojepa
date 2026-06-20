@@ -67,9 +67,10 @@ class SwinMSJEPAConfig:
 
     # ---- SIGReg (per stage) -----------------------------------------------
     # Per-stage SIGReg weight (s1..s4). Legacy: scales token SIGReg at each E_s.
-    # Pyramid: s4 weights S4-S3 at s4 grid; s3..s1 weight R3..R1 band residuals.
-    # NOTE: beta_sig scale differs between legacy (per-token) and pyramid (per-slice)
-    # SIGReg paths -- values are not comparable across legacy_jepa modes.
+    # Pyramid: s4 regularizes the coarse base (``sigreg_s4_on``); s3..s1 weight
+    # hierarchical residuals R3..R1. NOTE: beta_sig scale differs between legacy
+    # (per-token) and pyramid (per-slice) SIGReg paths -- not comparable across modes.
+    sigreg_s4_on: str = "e4"                  # e4 | c4 -- pyramid coarse SIGReg target
     beta_sig: Tuple[float, ...] = (0.05, 0.05, 0.05, 0.01)
     sigreg_n_dirs: Tuple[int, ...] = (64, 64, 64, 64)  # bounded by lat_dims[s]
     sigreg_knots: int = 17                      # CF quadrature knots (repo SIGReg)
@@ -168,6 +169,9 @@ class SwinMSJEPAConfig:
         if any(e < 0 for e in self.freeze_after_epoch):
             raise ValueError(
                 f"freeze_after_epoch entries must be non-negative, got {self.freeze_after_epoch}")
+        if self.sigreg_s4_on not in ("e4", "c4"):
+            raise ValueError(
+                f"sigreg_s4_on must be 'e4' or 'c4', got {self.sigreg_s4_on!r}")
 
 
 # Tuple-valued fields take ``nargs`` from argparse; map element types here.

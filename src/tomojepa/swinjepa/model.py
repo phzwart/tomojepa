@@ -23,7 +23,8 @@ from .mask import MultiScaleBlockMask, assert_mask_consistency
 from .predictor import CrossScalePredictor
 from .sigreg import StageSIGReg, ImageGroupedStageSIGReg
 from .pyramid import (CoarseMIMHead, hierarchical_residuals, masked_coarse_mae,
-                      fg_gate, reconstruct_from_residuals, pyramid_band_residuals)
+                      fg_gate, reconstruct_from_residuals, pyramid_band_residuals,
+                      pyramid_sigreg_features)
 from .losses import (stage_target_norm, gather_masked, lambda_schedule,
                      stage_active_schedule, masked_prediction_loss,
                      stage_feature_diagnostics)
@@ -450,12 +451,17 @@ class SwinMSJEPA(nn.Module):
             pred_w[s] > 0.0 and not self.stage_frozen(s)
             for s in range(self.num_stages - 1))
         need_sig_bands = any(sig_w[s] > 0.0 for s in range(self.num_stages))
-        if need_residuals or need_sig_bands:
+        band_residuals: Dict[str, torch.Tensor] = {}
+        sig_feats: Dict[str, torch.Tensor] = {}
+        if need_residuals:
             band_residuals = pyramid_band_residuals(
                 E_full, C4, self.grids, fg_stages,
                 strict_laplacian=self.cfg.strict_laplacian)
-        else:
-            band_residuals = {}
+        if need_sig_bands:
+            sig_feats = pyramid_sigreg_features(
+                E_full, C4, self.grids, fg_stages,
+                strict_laplacian=self.cfg.strict_laplacian,
+                s4_on=self.cfg.sigreg_s4_on)
         if need_residuals:
             residuals = {k: band_residuals[k] for k in _RESIDUAL_KEYS}
             R_tgt = {k: stage_target_norm(v, self.cfg.target_norm).detach()
@@ -485,11 +491,11 @@ class SwinMSJEPA(nn.Module):
         per_stage_sig: Dict[str, float] = {}
         for s in range(self.num_stages):
             key = self._stage_key(s)
-            if sig_w[s] <= 0.0 or not band_residuals:
+            if sig_w[s] <= 0.0 or not sig_feats:
                 per_stage_sig[key] = 0.0
                 continue
             fg_s = fg_stages[key] if fg_stages is not None else None
-            sig_s = self.sigreg_r[s](band_residuals[key], fg_s)
+            sig_s = self.sigreg_r[s](sig_feats[key], fg_s)
             per_stage_sig[key] = float(sig_s.detach())
             l_sig = l_sig + sig_w[s] * scales[s] * sig_s
 
@@ -516,6 +522,7 @@ class SwinMSJEPA(nn.Module):
                 logs[f"fg_cov/{key}"] = float(fg_stages[key].float().mean())
         logs.update(self._freeze_logs())
         logs.update(stage_feature_diagnostics(E_full))
+        logs.update(stage_feature_diagnostics({"C4": C4}))
         return loss, logs
 
     @torch.no_grad()

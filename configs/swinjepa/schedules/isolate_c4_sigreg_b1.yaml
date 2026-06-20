@@ -1,4 +1,8 @@
 # Isolate C4-only training with beta_sig=1.0 on s4 (2x default isolate_c4_sigreg).
+#
+# s4 SIGReg on coarse base (E4 default; pair with --sigreg_s4_on e4 or c4).
+# CLI: --stage_base_weights 0 0 0 1 --predictor_enabled false
+#      --sigreg_tokens_per_slice 0 --sigreg_queue_len 2048
 
 name: isolate_c4_sigreg_b1
 

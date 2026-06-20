@@ -202,13 +202,39 @@ def pyramid_band_residuals(
         fg_stages: Optional[Dict[str, torch.Tensor]] = None,
         strict_laplacian: bool = False,
 ) -> Dict[str, torch.Tensor]:
-    """Inter-scale band residuals for per-stage SIGReg (keys ``s1..s4``).
+    """Inter-scale band residuals (keys ``s1..s4``), including legacy ``r4`` band.
 
     ``s1`` S2-S1, ``s2`` S3-S2, ``s3`` S4-S3 (``E3 - up(C4)``),
-    ``s4`` S4-S3 at the coarse grid (``E4 - pool(E3)``).
+    ``s4`` S4-S3 at the coarse grid (``E4 - pool(E3)``). For SIGReg, prefer
+    :func:`pyramid_sigreg_features` (coarse base at s4, residuals above).
     """
     out = _band_residuals_core(
         E_full, C4, grids, strict_laplacian=strict_laplacian)
+    if fg_stages is not None:
+        out = {k: fg_gate(v, fg_stages[k]) for k, v in out.items()}
+    return out
+
+
+def pyramid_sigreg_features(
+        E_full: Dict[str, torch.Tensor],
+        C4: torch.Tensor,
+        grids: List[Tuple[int, int]],
+        fg_stages: Optional[Dict[str, torch.Tensor]] = None,
+        strict_laplacian: bool = False,
+        s4_on: str = "e4",
+) -> Dict[str, torch.Tensor]:
+    """Per-stage tensors for pyramid SIGReg (keys ``s1..s4``).
+
+    - ``s4``: coarse **base** -- target-pass ``E4`` (``s4_on='e4'``) or student
+      ``C4`` (``s4_on='c4'``).
+    - ``s3..s1``: hierarchical residuals ``R3..R1`` (same as prediction targets).
+    """
+    if s4_on not in ("e4", "c4"):
+        raise ValueError(f"s4_on must be 'e4' or 'c4', got {s4_on!r}")
+    bands = _band_residuals_core(
+        E_full, C4, grids, strict_laplacian=strict_laplacian)
+    s4_feat = E_full["s4"] if s4_on == "e4" else C4
+    out = {"s4": s4_feat, "s3": bands["s3"], "s2": bands["s2"], "s1": bands["s1"]}
     if fg_stages is not None:
         out = {k: fg_gate(v, fg_stages[k]) for k, v in out.items()}
     return out
