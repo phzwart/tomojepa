@@ -1,0 +1,89 @@
+# HL-JEPA petiole @ 448 — all bands on, stop_grad_target enabled (I-JEPA fallback).
+#
+#   tomojepa train-hljepa \
+#     --config configs/swinjepa_v2/petiole_448_full_stopgrad.yaml \
+#     --data_dir /home/sparksvc/RunLocal \
+#     --pca_every 25
+
+data:
+  ndim: 2
+  image_size: [448, 448]
+  patch_size: 4
+  in_chans: 1
+  dataset_key: reconstruction
+  pattern: petiole.zarr
+  backend: zarr
+  crop_mode: resize
+  photometric:
+    noise_std: [0.0, 0.05]
+    intensity_scale: [0.85, 1.15]
+    contrast_scale: [0.85, 1.15]
+    gamma: [0.85, 1.15]
+    blur_sigma: [0.0, 1.0]
+    blur_p: 0.3
+  geometric:
+    crop_scale: [0.85, 1.0]
+    hflip_p: 0.5
+    vflip_p: 0.5
+    rot90_p: 0.5
+
+mask:
+  strategy: multiblock
+  mask_ratio: 0.55
+  num_blocks: 4
+  block_scale: [0.15, 0.25]
+  block_aspect: [0.5, 2.0]
+  pool_rule: fraction
+  pool_thresh: 0.5
+
+backbone:
+  model_name: swin_tiny_patch4_window7_224
+  embed_dim: 48
+  depths: [2, 2, 6, 2]
+  num_heads: [3, 6, 12, 24]
+  window_size: 7
+  in_chans: 1
+  drop_path_rate: 0.1
+  use_rope: true
+  pretrained: false
+
+band:
+  mode: laplacian
+  band_dim: 128
+  use_proj_head: false
+
+predictor:
+  depth_per_band: 3
+  embed_dim: 128
+  num_heads: 4
+  top_down: true
+  mlp_ratio: 4.0
+
+loss:
+  w_pred: [1.0, 1.0, 1.0, 1.0]
+  lambda_sig: [0.15, 0.15, 0.15, 0.15]
+  pred_loss: smooth_l1
+  pred_l2norm: false
+  stop_grad_target: true
+
+sigreg:
+  num_slices: 128
+  t_max: 5.0
+  n_knots: 17
+  sigma: 1.0
+  fold_N_into_lambda: true
+  per_token: true
+
+train:
+  epochs: 50
+  batch_size: 4
+  base_lr: 1.0e-4
+  warmup_epochs: 2
+  weight_decay: 0.05
+  grad_clip: 1.0
+  amp_dtype: bf16
+  log_every: 10
+  metric_every: 25
+  seed: 0
+  run_dir: runs/hljepa_petiole_448_stopgrad
+  data_dir: /home/sparksvc/RunLocal

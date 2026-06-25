@@ -36,7 +36,8 @@ def test_apply_freeze_schedule_idempotent():
 
 def test_freeze_s4_stops_coarse_gradients():
     torch.manual_seed(0)
-    model = SwinMSJEPA(small_cfg(freeze_after_epoch=(0, 0, 0, 1)))
+    model = SwinMSJEPA(small_cfg(
+        freeze_after_epoch=(0, 0, 0, 1), coarse_mim_mode="conv"))
     x = torch.randn(2, 1, 64, 64)
     model.apply_freeze_schedule(1)
     assert model.frozen_stage_keys == ["s4"]
@@ -72,6 +73,8 @@ def test_zero_lambda_stages_carry_no_grad():
     """Inactive stages (lambda=0, beta=0) detach latents and skip predictor."""
     torch.manual_seed(0)
     model = SwinMSJEPA(small_cfg(
+        coarse_mim_mode="cross_attn",
+        predictor_enabled=True,
         stage_base_weights=(0.0, 0.0, 0.0, 1.0),
         sigreg_tokens_per_slice=8,
     ))
@@ -89,9 +92,7 @@ def test_zero_lambda_stages_carry_no_grad():
     for key in ("s1", "s2", "s3"):
         g = model.lateral[key].weight.grad
         assert g is None or float(g.norm()) == 0.0
-    for p in model.predictor.parameters():
-        assert p.grad is None or float(p.grad.norm()) == 0.0
     g4 = model.lateral["s4"].weight.grad
     assert g4 is not None and float(g4.norm()) > 0
-    g_head = model.coarse_head.head[0].weight.grad
-    assert g_head is not None and float(g_head.norm()) > 0
+    g_pred = model.predictor.linear_in[3].weight.grad
+    assert g_pred is not None and float(g_pred.norm()) > 0

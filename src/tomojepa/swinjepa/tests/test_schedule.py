@@ -52,6 +52,43 @@ def test_schedule_epoch_progress():
     assert sched.at(172, 8600, spe).progress == pytest.approx(0.0)
 
 
+def test_pred_active_decouples_mae_from_sigreg():
+    """pred_active can ramp MAE while active keeps SIGReg on."""
+    from tomojepa.swinjepa.schedule import TrainingSchedule
+
+    sched = TrainingSchedule.from_dict({
+        "name": "test_pred_active",
+        "stages": {
+            "s1": {"active": [{"progress": 0.0, "value": 0.0}],
+                   "beta_sig": [{"progress": 0.0, "value": 0.0}],
+                   "freeze": [{"progress": 0.0, "value": False}]},
+            "s2": {"active": [{"progress": 0.0, "value": 0.0}],
+                   "beta_sig": [{"progress": 0.0, "value": 0.0}],
+                   "freeze": [{"progress": 0.0, "value": False}]},
+            "s3": {"active": [{"progress": 0.0, "value": 0.0}],
+                   "beta_sig": [{"progress": 0.0, "value": 0.0}],
+                   "freeze": [{"progress": 0.0, "value": False}]},
+            "s4": {"active": [{"progress": 0.0, "value": 1.0}],
+                   "pred_active": [{"progress": 0.0, "value": 0.0},
+                                   {"progress": 0.25, "value": 1.0}],
+                   "beta_sig": [{"progress": 0.0, "value": 0.01}],
+                   "freeze": [{"progress": 0.0, "value": False}]},
+        },
+    })
+    s0 = sched.at(0, 500)
+    s125 = sched.at(125, 500)
+    assert s0.stages["s4"].active == 1.0
+    assert s0.stages["s4"].pred_active == 0.0
+    assert s0.stages["s4"].beta_sig == pytest.approx(0.01)
+    assert s125.stages["s4"].pred_active == pytest.approx(1.0)
+
+
+def test_pred_active_defaults_to_active():
+    sched = load_training_schedule(_PETIOLE_SCHED)
+    s0 = sched.at(0, 1000, steps_per_epoch=172)
+    assert s0.stages["s4"].pred_active == s0.stages["s4"].active
+
+
 def test_schedule_overrides_curriculum_and_freezes():
     sched = load_training_schedule(_PETIOLE_SCHED)
     model = SwinMSJEPA(small_cfg())

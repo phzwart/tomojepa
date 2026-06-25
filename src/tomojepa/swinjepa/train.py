@@ -91,8 +91,12 @@ def parse_args():
     p.add_argument("--pca_every", type=int, default=25,
                    help="render a multi-scale PCA probe (all 4 stages) every N "
                         "steps (0 = off)")
-    p.add_argument("--pca_samples", type=int, default=9,
-                   help="number of fixed slices in the PCA strip probe")
+    p.add_argument("--pca_samples", type=int, default=1,
+                   help="Number of fixed slices in the PCA strip (each runs a probe forward)")
+    p.add_argument("--pca_mode", choices=["inference", "pyramid", "legacy"],
+                   default="inference",
+                   help="inference: clean extract_features Es only; pyramid: full "
+                        "C4/T4/R/E decomp; legacy: legacy_jepa token maps")
     p.add_argument("--pca_es_every", type=int, default=100,
                    help="render a 4xN PCA grid of target-pass Es (one slice) every "
                         "N steps (0 = off)")
@@ -395,6 +399,7 @@ def _cpu_pyramid_decomp(model, img_cpu, dev, fg_cpu=None):
     decomp = model.extract_pyramid_probe(img, fg_px=fg_px)
     out = {
         "C4": decomp["C4"]["s4"][0].detach().cpu(),
+        "T4": decomp["T4"]["s4"][0].detach().cpu(),
         "R": {k: decomp["R"][k][0].detach().cpu() for k in ("s1", "s2", "s3")},
         "E": {k: decomp["E"][k][0].detach().cpu() for k in model.stage_keys},
     }
@@ -420,7 +425,8 @@ def _cpu_legacy_feats(model, img_cpu, dev, fg_cpu=None):
 
 @torch.no_grad()
 def run_pca_viz(model, probe, step, pca_dir, pca_es_dir,
-                n_terms, max_tokens, do_strip, do_es, device=None):
+                n_terms, max_tokens, do_strip, do_es, device=None, *,
+                pca_mode: str = "inference"):
     """Single probe forward; optional strip and/or Es grid (CPU PCA + matplotlib)."""
     idxs, probe_ds = probe
     imgs, fgs = _load_pca_probe_views(probe_ds, idxs, model.cfg.foreground_mask)
@@ -428,6 +434,12 @@ def run_pca_viz(model, probe, step, pca_dir, pca_es_dir,
     was_training = model.training
     model.eval()
     keys = model.stage_keys
+    if pca_mode == "legacy":
+        strip_kind = "legacy"
+    elif pca_mode == "pyramid":
+        strip_kind = "pyramid"
+    else:
+        strip_kind = "inference"
     outs = {}
     try:
         idx = idxs[0]
@@ -438,13 +450,18 @@ def run_pca_viz(model, probe, step, pca_dir, pca_es_dir,
 
         if do_strip:
             n = len(imgs)
-            ncol = (1 + len(keys)) if model.cfg.legacy_jepa else (1 + 1 + 3 + len(keys))
+            if strip_kind == "legacy":
+                ncol = 1 + len(keys)
+            elif strip_kind == "inference":
+                ncol = 1 + len(keys)
+            else:
+                ncol = 4 + 3 + len(keys)
             strip_cell_in = 3.2
             strip_ref_rows = 3
             row_h = strip_cell_in * strip_ref_rows / max(n, 1)
             s1_h, s1_w = model.grids[0]
 
-            if model.cfg.legacy_jepa:
+            if strip_kind == "legacy" or strip_kind == "inference":
                 all_feats = []
                 for r, im_cpu in enumerate(imgs):
                     fg_r = fgs[r] if fgs is not None else None
@@ -464,7 +481,11 @@ def run_pca_viz(model, probe, step, pca_dir, pca_es_dir,
                 shared_rgb = {
                     "C4": _pca_stage_rgb_shared(
                         [d["C4"] for d in all_decomps], max_tokens),
+                    "T4": _pca_stage_rgb_shared(
+                        [d["T4"] for d in all_decomps], max_tokens),
                 }
+                diffs = [(d["C4"] - d["T4"]).abs() for d in all_decomps]
+                shared_rgb["dCT"] = _pca_stage_rgb_shared(diffs, max_tokens)
                 for rk in ("s1", "s2", "s3"):
                     shared_rgb[f"R{rk[1]}"] = _pca_stage_rgb_shared(
                         [d["R"][rk] for d in all_decomps], max_tokens)
@@ -481,20 +502,28 @@ def run_pca_viz(model, probe, step, pca_dir, pca_es_dir,
             fig.subplots_adjust(left=0.002, right=0.998, top=0.94, bottom=0.002,
                                 wspace=0.01, hspace=0.01)
             for r, (sl_idx, im_cpu) in enumerate(zip(idxs, imgs)):
+                in_h, in_w = int(im_cpu.shape[-2]), int(im_cpu.shape[-1])
                 im_s1 = _pool_img_to_grid(im_cpu[0, 0].numpy(), s1_h, s1_w)
-                panels = [(im_s1, f"slice {sl_idx} ({s1_h}x{s1_w})", "gray")]
-                if model.cfg.legacy_jepa:
+                panels = [(im_s1, f"slice {sl_idx} ({in_h}x{in_w})", "gray")]
+                if strip_kind == "legacy" or strip_kind == "inference":
                     for key in keys:
                         grid = all_feats[r][key].shape[-1]
                         panels.append((
                             shared_rgb[key][r],
-                            f"{key} ({grid}x{grid})", None))
+                            f"E{key} ({grid}x{grid})", None))
                 else:
                     d = all_decomps[r]
                     c4 = d["C4"]
                     panels.append((
                         shared_rgb["C4"][r],
                         f"C4 ({c4.shape[-1]}x{c4.shape[-1]})", None))
+                    t4 = d["T4"]
+                    panels.append((
+                        shared_rgb["T4"][r],
+                        f"T4 ({t4.shape[-1]}x{t4.shape[-1]})", None))
+                    panels.append((
+                        shared_rgb["dCT"][r],
+                        f"|C4-T4| ({c4.shape[-1]}x{c4.shape[-1]})", None))
                     for rk in ("s1", "s2", "s3"):
                         feat = d["R"][rk]
                         panels.append((
@@ -513,28 +542,25 @@ def run_pca_viz(model, probe, step, pca_dir, pca_es_dir,
                         ax.set_title(title, fontsize=9, pad=2)
                     ax.axis("off")
                     ax.margins(0)
-            mode = "legacy" if model.cfg.legacy_jepa else "pyramid"
-            fig.suptitle(f"multi-scale PCA ({mode}) @ step {step}", fontsize=11, y=0.98)
+            fig.suptitle(f"multi-scale PCA ({strip_kind}) @ step {step}", fontsize=11, y=0.98)
             os.makedirs(pca_dir, exist_ok=True)
             strip_out = os.path.join(pca_dir, f"pca_step{step:06d}.png")
             fig.savefig(strip_out, dpi=72, bbox_inches="tight", pad_inches=0.02)
             plt.close(fig)
             outs["strip"] = strip_out
             del fig, axes, panels, shared_rgb
-            if model.cfg.legacy_jepa:
+            if strip_kind == "legacy" or strip_kind == "inference":
                 feats_cpu = all_feats[0]
-            else:
-                feats_cpu = all_decomps[0]["E"]
-            if model.cfg.legacy_jepa:
                 del all_feats
             else:
+                feats_cpu = all_decomps[0]["E"]
                 del all_decomps
 
         if do_es:
             if feats_cpu is None:
                 img_cpu = imgs[0]
                 fg_cpu = fgs[0] if fgs is not None else None
-                if model.cfg.legacy_jepa:
+                if strip_kind == "legacy" or strip_kind == "inference":
                     feats_cpu = _cpu_legacy_feats(model, img_cpu, dev, fg_cpu=fg_cpu)
                 else:
                     decomp_cpu = _cpu_pyramid_decomp(model, img_cpu, dev, fg_cpu=fg_cpu)
@@ -578,6 +604,12 @@ def main():
     cfg = from_args(args)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+
+    if cfg.coarse_mim_mode == "integrated" and cfg.dual_view:
+        if aug_cfg.global_views < 2:
+            raise ValueError(
+                f"coarse_mim_mode='integrated' with dual_view requires "
+                f"global_views >= 2, got {aug_cfg.global_views}")
 
     device, _local_rank = D.init_distributed()
     ws = D.world_size()
@@ -648,12 +680,17 @@ def main():
         cur = (f"stage_curriculum={cfg.stage_curriculum}"
                if cfg.stage_curriculum == "fine_in"
                else f"stage_curriculum=coarse_in ramp={list(cfg.coarse_ramp_stages)}")
-        print(f"Backbone {cfg.backbone_name} dims {model.out_chans} -> "
-              f"lat_dims {model.lat_chans}; "
+        embed_note = (f"embed_dim={cfg.backbone_embed_dim} -> "
+                      if cfg.backbone_embed_dim is not None else "")
+        print(f"Backbone {cfg.backbone_name} {embed_note}"
+              f"stage dims {model.out_chans} -> lat_dims {model.lat_chans}; "
+              f"mim_mode={cfg.coarse_mim_mode}; "
               f"{'legacy_jepa' if cfg.legacy_jepa else 'pyramid_residual'}; "
               f"predictor="
               f"{cfg.predictor_enabled} (cross_scale={cfg.predictor_cross_scale}"
               f"{', rope' if cfg.use_rope else ''}); "
+              f"fusion_depth={cfg.fusion_depth} fusion_heads={cfg.fusion_heads}; "
+              f"dual_view={cfg.dual_view}; "
               f"beta_sig={list(cfg.beta_sig)}; sigreg_queue={cfg.sigreg_queue_len}; "
               f"sigreg_tok/slice={cfg.sigreg_tokens_per_slice}; "
               f"sigreg_tok/frac={cfg.sigreg_token_frac}; "
@@ -738,14 +775,24 @@ def main():
         pbar = tqdm.tqdm(total=steps_per_epoch, desc=f"epoch {epoch}") if D.is_main() else None
         for vs, fg_vs in loader:
             train_ds.update_augmentations(global_step, total_steps, steps_per_epoch)
-            x = vs[:, 0].to(device, non_blocking=True)         # [B, C, H, W]
-            fg = None
-            if cfg.foreground_mask:
-                fg = fg_vs[:, 0].to(device, non_blocking=True)  # [B, 1, H, W]
+            dual = (cfg.coarse_mim_mode == "integrated" and cfg.dual_view
+                    and not cfg.legacy_jepa)
+            if dual:
+                x = vs.to(device, non_blocking=True)              # [B, V, C, H, W]
+                fg = None
+                if cfg.foreground_mask:
+                    fg = fg_vs.to(device, non_blocking=True)      # [B, V, 1, H, W]
+            else:
+                x = vs[:, 0].to(device, non_blocking=True)         # [B, C, H, W]
+                fg = None
+                if cfg.foreground_mask:
+                    fg = fg_vs[:, 0].to(device, non_blocking=True)  # [B, 1, H, W]
             opt.zero_grad(set_to_none=True)
             with autocast(device.type, dtype=amp_dtype, enabled=use_amp):
                 loss, logs = model.compute_loss(x, fg_px=fg, step=global_step,
                                                 total_steps=total_steps, epoch=epoch)
+            if not cfg.legacy_jepa and logs.get("mae/cos") is not None:
+                model.note_mae_cos(logs["mae/cos"])
             loss.backward()
             if model._last_newly_frozen:
                 trainable = [p for p in model.parameters() if p.requires_grad]
@@ -761,11 +808,19 @@ def main():
             if D.is_main():
                 # Per-batch loss on every step (the postfix would otherwise look
                 # frozen between log_every intervals even though the loss moves).
-                pbar.set_postfix(loss=f"{logs['total']:.3f}",
-                                 pred=f"{logs['l_pred']:.3f}",
-                                 mae=f"{logs.get('l_mae', 0):.3f}",
-                                 sig=f"{logs['l_sig']:.2f}",
-                                 er4=f"{logs['effrank/s4']:.1f}")
+                postfix = dict(loss=f"{logs['total']:.3f}",
+                               pred=f"{logs['l_pred']:.3f}",
+                               mae=f"{logs.get('l_mae', 0):.3f}",
+                               sig=f"{logs['l_sig']:.2f}",
+                               er4=f"{logs['effrank/s4']:.1f}")
+                if not cfg.legacy_jepa and logs.get("mae/cos") is not None:
+                    postfix["cos"] = f"{logs['mae/cos']:.3g}"
+                if cfg.s4_cosine_level > 0 and "sigreg/cos_ema" in logs:
+                    postfix["cos_ema"] = f"{logs['sigreg/cos_ema']:.3g}"
+                    postfix["sig_gate"] = f"{logs['sigreg/cos_gate']:.3g}"
+                if logs.get("sig/raw/s4") is not None:
+                    postfix["sig_r"] = f"{logs['sig/raw/s4']:.2f}"
+                pbar.set_postfix(**postfix)
                 if global_step % args.log_every == 0:
                     sk = model.stage_keys
                     fmt = lambda pre: "[" + " ".join(f"{logs[f'{pre}/{k}']:.3g}"
@@ -774,7 +829,14 @@ def main():
                     if cfg.foreground_mask and f"fg_cov/{sk[0]}" in logs:
                         extra = f" fg_cov {fmt('fg_cov')}"
                     sig_str = fmt('sig')
+                    if "sig/raw/s4" in logs:
+                        sig_str += f" raw {fmt('sig/raw')}"
                     mae_str = f" mae={logs['l_mae']:.3g}" if not cfg.legacy_jepa else ""
+                    if not cfg.legacy_jepa and logs.get("mae/cos") is not None:
+                        mae_str += f" cos={logs['mae/cos']:.3g}"
+                    if cfg.s4_cosine_level > 0 and "sigreg/cos_gate" in logs:
+                        mae_str += (f" cos_ema={logs['sigreg/cos_ema']:.3g}"
+                                    f" sig_gate={logs['sigreg/cos_gate']:.3g}")
                     pbar.write(
                         f"[step {global_step}] pred {fmt('pred')}{mae_str} sig {sig_str} "
                         f"effrank {fmt('effrank')} fstd {fmt('fstd')} "
@@ -798,7 +860,7 @@ def main():
                     viz = run_pca_viz(
                         model, pca_probe, global_step, pca_dir, pca_es_dir,
                         args.pca_es_terms, args.pca_max_tokens, do_strip, do_es,
-                        device=device)
+                        device=device, pca_mode=args.pca_mode)
                     if pbar is not None:
                         if "strip" in viz:
                             pbar.write(f"[pca] saved {viz['strip']}", file=sys.stderr)

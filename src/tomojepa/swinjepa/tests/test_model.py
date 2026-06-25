@@ -15,6 +15,25 @@ from tomojepa.swinjepa.predictor import RoPEMultiheadAttention, stage_token_coor
 from .conftest import small_cfg
 
 
+def test_narrow_backbone_latent_predictor_stack():
+    """embed_dim + lat_dims + pred_dim overrides build and train a step."""
+    torch.manual_seed(0)
+    cfg = small_cfg(
+        backbone_embed_dim=48,
+        lat_dims=(32, 32, 32, 32),
+        pred_dim=128,
+        sigreg_queue_len=0,
+    )
+    model = SwinMSJEPA(cfg).train()
+    assert model.out_chans == [48, 96, 192, 384]
+    assert model.lat_chans == [32, 32, 32, 32]
+    x = torch.randn(2, 1, 64, 64)
+    loss, logs = model.compute_loss(x, step=0, total_steps=10)
+    assert torch.isfinite(loss).all()
+    loss.backward()
+    assert any(p.grad is not None for p in model.lateral.parameters())
+
+
 def test_predictor_output_shapes():
     torch.manual_seed(0)
     model = SwinMSJEPA(small_cfg())
@@ -106,7 +125,7 @@ def test_smoke_forward_backward():
 def test_data2vec_path_shapes():
     """predictor.enabled=False uses student features at masked positions."""
     torch.manual_seed(0)
-    model = SwinMSJEPA(small_cfg(predictor_enabled=False))
+    model = SwinMSJEPA(small_cfg(predictor_enabled=False, coarse_mim_mode="conv"))
     assert model.predictor is None
     loss, _ = model.compute_loss(torch.randn(2, 1, 64, 64), 0, 10)
     assert torch.isfinite(loss)
@@ -159,6 +178,22 @@ def test_per_stage_lat_dims():
         key = f"s{s + 1}"
         assert model.lateral[key].out_channels == cfg.lat_dims[s]
         assert model.sigreg[s].dim == cfg.lat_dims[s]
+
+
+def test_pyramid_funnel_lat_dims_forward():
+    torch.manual_seed(0)
+    cfg = small_cfg(
+        lat_dims=(32, 24, 16, 8),
+        legacy_jepa=False,
+        sigreg_queue_len=0,
+        pred_dim=64,
+        pred_heads=4,
+    )
+    model = SwinMSJEPA(cfg).train()
+    x = torch.randn(2, 1, 64, 64)
+    loss, _ = model.compute_loss(x, step=0, total_steps=10)
+    assert torch.isfinite(loss).all()
+    loss.backward()
 
 
 def test_pyramid_lat_dims_shared():

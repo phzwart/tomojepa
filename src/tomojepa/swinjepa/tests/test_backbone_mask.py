@@ -19,6 +19,12 @@ def test_backbone_rope_forward():
         assert feats[key].shape == (2, bb.out_chans[s], h, w)
 
 
+def test_backbone_embed_dim_override():
+    bb = SwinMultiScaleBackbone(img_size=64, in_chans=1, embed_dim=48).eval()
+    assert bb.embed_dim == 48
+    assert bb.out_chans == [48, 96, 192, 384]
+
+
 def test_backbone_stage_shapes():
     torch.manual_seed(0)
     for img in (64, 96):                       # both multiples of 32 (clean s4 grid)

@@ -2,7 +2,8 @@
 
 Each stage (``s1``..``s4``) can define piecewise schedules for:
 
-- ``active`` — loss weight multiplier (replaces ``stage_curriculum`` ramps)
+- ``active`` — SIGReg loss multiplier (and prediction when ``pred_active`` omitted)
+- ``pred_active`` — optional prediction / s4 MAE multiplier (defaults to ``active``)
 - ``beta_sig`` — per-step SIGReg weight (replaces static ``beta_sig``)
 - ``freeze`` — sticky bool; once true at progress ``p``, stage stays frozen
 
@@ -34,12 +35,14 @@ else:
 
 _STAGE_KEYS = ("s1", "s2", "s3", "s4")
 _NUMERIC_CHANNELS = ("active", "beta_sig")
+_OPTIONAL_NUMERIC_CHANNELS = ("pred_active",)
 _BOOL_CHANNELS = ("freeze",)
 
 
 @dataclass(frozen=True)
 class StageScheduleState:
     active: float
+    pred_active: float
     beta_sig: float
     frozen: bool
 
@@ -104,6 +107,15 @@ class TrainingSchedule:
                 parsed[channel] = [_parse_knot(k, channel) for k in knots_raw]
                 if channel in _BOOL_CHANNELS:
                     parsed[channel] = [(p, bool(v)) for p, v in parsed[channel]]
+            for channel in _OPTIONAL_NUMERIC_CHANNELS:
+                knots_raw = spec.get(channel)
+                if knots_raw is None:
+                    continue
+                if not isinstance(knots_raw, list) or not knots_raw:
+                    raise ValueError(f"stages.{key}.{channel} must be a non-empty list")
+                parsed[channel] = [_parse_knot(k, channel) for k in knots_raw]
+            if "pred_active" not in parsed:
+                parsed["pred_active"] = list(parsed["active"])
             stage_knots[key] = parsed
         return cls(name, stage_knots, progress_scope=progress_scope)
 
@@ -124,6 +136,7 @@ class TrainingSchedule:
             spec = self._stage_knots[key]
             stages[key] = StageScheduleState(
                 active=_interp_numeric(spec["active"], progress),
+                pred_active=_interp_numeric(spec["pred_active"], progress),
                 beta_sig=_interp_numeric(spec["beta_sig"], progress),
                 frozen=_interp_bool_sticky(spec["freeze"], progress),
             )
@@ -139,7 +152,7 @@ class TrainingSchedule:
         return lines
 
 
-_RUN_OVERRIDE_KEYS = ("epochs", "mask_ratio", "seed", "batch_size")
+_RUN_OVERRIDE_KEYS = ("epochs", "img_size", "mask_ratio", "seed", "batch_size")
 
 
 def parse_run_block(data: Mapping[str, Any]) -> Dict[str, Any]:
@@ -154,7 +167,7 @@ def parse_run_block(data: Mapping[str, Any]) -> Dict[str, Any]:
         if key not in run:
             continue
         val = run[key]
-        if key in ("epochs", "seed", "batch_size"):
+        if key in ("epochs", "img_size", "seed", "batch_size"):
             out[key] = int(val)
         else:
             out[key] = float(val)

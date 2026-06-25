@@ -81,7 +81,7 @@ where = ["src"]
 "tomojepa.patchdb" = ["schema.sql", "README.md"]
 
 [tool.pytest.ini_options]
-testpaths = ["src/tomojepa/vitup/tests", "src/tomojepa/swinjepa/tests"]
+testpaths = ["src/tomojepa/vitup/tests", "src/tomojepa/swinjepa/tests", "src/tomojepa/swinjepa_v2/tests"]
 addopts = "-q"
 
 [tool.ruff]

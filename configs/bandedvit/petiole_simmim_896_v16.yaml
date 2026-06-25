@@ -1,0 +1,51 @@
+name: petiole_simmim_896_v16
+
+run:
+  img_size: 896
+  batch_size: 1
+  epochs: 10
+  mask_ratio: 0.45
+
+model:
+  pred_enabled: true
+  band_K: 1
+  band_m0: 2
+  band_m1: 23
+  band_sample_mode: balanced
+  band_weights: [1, 5, 6]
+  mask_ratio: 0.45
+  beta_sig: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.5]
+  sigreg_blocks: [-1]
+  sigreg_queue_len: 512
+  sigreg_min_token_dist: 3
+  foreground_mask: true
+  fg_mode: circle
+  fg_circle_diameter_frac: 1.0
+  fg_coverage: 0.01
+
+augmentations:
+  variant: tomo2
+  crop_mode: resize
+  global_views: 2
+  local_views: 0
+  shared_global_aug: true
+  rotate:
+    p: 1.0
+    deg: [5, 175]
+  hflip_p: 0.5
+  vflip_p: 0.5
+  resize_jitter: [1.1, 1.3]
+  window:
+    p_low: 0.01
+    p_high: 0.99
+    sample_size: 100000
+  blur:
+    kernel_size: 7
+    sigma: [0.1, 1.0]
+  poisson:
+    scale: 10000
+  pixel_mask:
+    ratio: 0.15
+  normalize:
+    mean: 0.5
+    std: 0.5

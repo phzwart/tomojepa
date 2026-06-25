@@ -255,10 +255,16 @@ class TomographyDataset(Dataset):
 
         if self.is_train:
             views, fg_views = [], []
-            for _ in range(self.global_views):
+            if self.aug_config.shared_global_aug and self.global_views > 1:
                 v, f = self._apply_tf(self.global_tf, img, fg_src)
-                views.append(v)
-                fg_views.append(f)
+                for _ in range(self.global_views):
+                    views.append(v)
+                    fg_views.append(f)
+            else:
+                for _ in range(self.global_views):
+                    v, f = self._apply_tf(self.global_tf, img, fg_src)
+                    views.append(v)
+                    fg_views.append(f)
             for _ in range(self.local_views):
                 v, f = self._apply_tf(self.local_tf, img, fg_src)
                 views.append(v)

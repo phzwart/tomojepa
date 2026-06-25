@@ -39,7 +39,7 @@ def test_flip_off_by_default():
 def test_load_job_yaml_run_block(tmp_path):
     job = {
         "name": "test_run",
-        "run": {"epochs": 10, "mask_ratio": 0.62, "seed": 42},
+        "run": {"epochs": 10, "img_size": 448, "mask_ratio": 0.62, "seed": 42},
         "stages": {
             "s1": {"active": [{"progress": 0.0, "value": 0.0}],
                    "beta_sig": [{"progress": 0.0, "value": 0.0}],
@@ -62,11 +62,15 @@ def test_load_job_yaml_run_block(tmp_path):
     assert sched is not None
     assert meta["run"]["mask_ratio"] == pytest.approx(0.62)
     assert meta["run"]["epochs"] == 10
+    assert meta["run"]["img_size"] == 448
     assert aug_cfg.hflip_p == 0.5
 
-    ns = type("NS", (), {"epochs": 100, "mask_ratio": 0.75, "seed": 0, "batch_size": 16})()
+    ns = type("NS", (), {
+        "epochs": 100, "img_size": 224, "mask_ratio": 0.75, "seed": 0, "batch_size": 16,
+    })()
     apply_job_run_overrides(ns, parse_run_block(job))
     assert ns.epochs == 10
+    assert ns.img_size == 448
     assert ns.mask_ratio == pytest.approx(0.62)
     assert ns.seed == 42
 

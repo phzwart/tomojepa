@@ -75,6 +75,18 @@ def train_swinjepa(ctx: typer.Context):
     _forward("tomojepa.swinjepa.train:main", "tomojepa train-swinjepa", ctx.args)
 
 
+@app.command("train-bandedvit", context_settings=_PASSTHROUGH,
+             help="BandedViT distance-banded encoder pre-training (SIGReg / SimMIM).")
+def train_bandedvit(ctx: typer.Context):
+    _forward("tomojepa.bandedvit.train:main", "tomojepa train-bandedvit", ctx.args)
+
+
+@app.command("train-hljepa", context_settings=_PASSTHROUGH,
+             help="Hierarchical Latent JEPA pre-training (spec-compliant swinjepa_v2).")
+def train_hljepa(ctx: typer.Context):
+    _forward("tomojepa.swinjepa_v2.scripts.pretrain:main", "tomojepa train-hljepa", ctx.args)
+
+
 @app.command("validate-swinjepa", context_settings=_PASSTHROUGH,
              help="Intrinsic validation of SwinMSJEPA runs (per-stage rank, JEPA eval).")
 def validate_swinjepa(ctx: typer.Context):

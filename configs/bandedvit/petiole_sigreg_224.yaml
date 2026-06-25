@@ -1,0 +1,38 @@
+name: petiole_sigreg_224
+
+run:
+  img_size: 224
+  batch_size: 16
+  epochs: 20
+
+model:
+  pred_enabled: false
+  band_K: 20
+  beta_sig: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.0]
+  sigreg_blocks: [-1]
+
+augmentations:
+  variant: tomo2
+  crop_mode: resize
+  global_views: 1
+  local_views: 0
+  rotate:
+    p: 0
+    deg: 0
+  hflip_p: 0.5
+  vflip_p: 0.5
+  resize_jitter: [0.9, 1.1]
+  window:
+    p_low: 0.01
+    p_high: 0.99
+    sample_size: 100000
+  blur:
+    kernel_size: 7
+    sigma: [0.1, 1.0]
+  poisson:
+    scale: 10000
+  pixel_mask:
+    ratio: 0.15
+  normalize:
+    mean: 0.5
+    std: 0.5

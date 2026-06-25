@@ -1,0 +1,48 @@
+name: petiole_simmim_448_v9
+
+run:
+  img_size: 448
+  batch_size: 4
+  epochs: 20
+  mask_ratio: 0.45
+
+model:
+  pred_enabled: true
+  band_K: 100000000
+  band_sample_mode: balanced
+  band_weights: [0.05, 0.50, 0.45]
+  mask_ratio: 0.45
+  beta_sig: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.5]
+  sigreg_blocks: [-1]
+  lr: 4.0e-5
+  foreground_mask: true
+  fg_mode: circle
+  fg_circle_diameter_frac: 1.0
+  fg_coverage: 0.01
+
+augmentations:
+  variant: tomo2
+  crop_mode: resize
+  global_views: 2
+  local_views: 0
+  shared_global_aug: true
+  rotate:
+    p: 0.5
+    deg: 180
+  hflip_p: 0.5
+  vflip_p: 0.5
+  resize_jitter: [0.9, 1.1]
+  window:
+    p_low: 0.01
+    p_high: 0.99
+    sample_size: 100000
+  blur:
+    kernel_size: 7
+    sigma: [0.1, 1.0]
+  poisson:
+    scale: 10000
+  pixel_mask:
+    ratio: 0.15
+  normalize:
+    mean: 0.5
+    std: 0.5

@@ -1,0 +1,82 @@
+data:
+  ndim: 2
+  image_size: [224, 224]
+  patch_size: 4
+  in_chans: 1
+  dataset_key: reconstruction
+  pattern: "recon_*.h5"
+  backend: auto
+  photometric:
+    noise_std: [0.0, 0.05]
+    intensity_scale: [0.85, 1.15]
+    contrast_scale: [0.85, 1.15]
+    gamma: [0.85, 1.15]
+    blur_sigma: [0.0, 1.0]
+    blur_p: 0.3
+  geometric:
+    crop_scale: [0.4, 1.0]
+    hflip_p: 0.5
+    vflip_p: 0.5
+    rot90_p: 0.5
+
+mask:
+  strategy: multiblock
+  mask_ratio: 0.6
+  num_blocks: 4
+  block_scale: [0.15, 0.25]
+  block_aspect: [0.5, 2.0]
+  pool_rule: fraction
+  pool_thresh: 0.5
+
+backbone:
+  model_name: swin_tiny_patch4_window7_224
+  embed_dim: 96
+  depths: [2, 2, 6, 2]
+  num_heads: [3, 6, 12, 24]
+  window_size: 8
+  in_chans: 1
+  drop_path_rate: 0.1
+  use_rope: true
+  rope_theta: 100.0
+  pretrained: false
+
+band:
+  mode: laplacian
+  band_dim: 256
+  use_proj_head: false
+
+predictor:
+  depth_per_band: 3
+  embed_dim: 256
+  num_heads: 8
+  top_down: true
+  mlp_ratio: 4.0
+
+loss:
+  w_pred: [1.0, 1.0, 1.0, 1.0]
+  lambda_sig: [0.1, 0.1, 0.1, 0.1]
+  pred_loss: smooth_l1
+  pred_l2norm: false
+  stop_grad_target: false
+
+sigreg:
+  num_slices: 256
+  t_max: 5.0
+  n_knots: 17
+  sigma: 1.0
+  fold_N_into_lambda: true
+  per_token: true
+
+train:
+  epochs: 300
+  batch_size: 64
+  base_lr: 1.5e-4
+  warmup_epochs: 20
+  weight_decay: 0.05
+  grad_clip: 1.0
+  amp_dtype: bf16
+  log_every: 50
+  metric_every: 500
+  seed: 0
+  run_dir: runs/hljepa_default_224
+  data_dir: ""

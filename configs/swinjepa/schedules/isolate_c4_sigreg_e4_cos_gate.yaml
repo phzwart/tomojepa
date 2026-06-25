@@ -1,0 +1,49 @@
+# Isolate C4: full MAE from start; SIGReg on E4 gated by mae/cos EMA.
+#
+# Pair with CLI:
+#   --stage_base_weights 0 0 0 100
+#   --coarse_mim_mode cross_attn
+#   --sigreg_s4_on e4
+#   --img_size 448   (s4 grid 14x14; consider --batch_size 4 if OOM)
+#   --backbone_embed_dim 48 --lat_dims 32 32 32 32 --pred_dim 128 --pred_heads 4
+#   Per-stage latents: --lat_dims 48 32 24 16  (fine->coarse funnel)
+#   --s4_cosine_level 0.75
+#   --sigreg_queue_len 2048 --sigreg_tokens_per_slice 0
+#
+# Cos gate: beta_sig[s4]=0.01 (below) held at 0 until cos_ema >= s4_cosine_level,
+# then ramped in over s4_sigreg_ramp_progress.
+
+name: isolate_c4_sigreg_e4_cos_gate
+
+stages:
+  s1:
+    active:
+      - {progress: 0.00, value: 0.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.0}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s2:
+    active:
+      - {progress: 0.00, value: 0.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.0}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s3:
+    active:
+      - {progress: 0.00, value: 0.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.0}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s4:
+    active:
+      - {progress: 0.00, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.01}
+    freeze:
+      - {progress: 0.00, value: false}

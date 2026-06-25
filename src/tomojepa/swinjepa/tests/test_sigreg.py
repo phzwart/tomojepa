@@ -97,6 +97,23 @@ def test_image_grouped_gradient_increases_variance():
     assert std_after > std_before
 
 
+def test_image_grouped_queue_does_not_inflate_loss():
+    """FIFO history sharpens the CF estimate but must not ramp loss magnitude."""
+    torch.manual_seed(0)
+    sig = ImageGroupedStageSIGReg(
+        dim=16, n_dirs=64, n_tokens_per_slice=8, min_grid_dist=0,
+        queue_len=64, cap_dirs_by_rank=False, min_dirs=4)
+    feat = torch.randn(4, 16, 4, 4)
+    l_empty = float(sig(feat).detach())
+    for _ in range(20):
+        _ = sig(feat)
+    l_full = float(sig(feat).detach())
+    assert int(sig.queue_size[0]) > 4
+    ratio = l_full / max(l_empty, 1e-8)
+    assert ratio > 0.5
+    assert ratio < 2.0
+
+
 def test_image_grouped_rank_cap_when_enabled():
     torch.manual_seed(0)
     sig = ImageGroupedStageSIGReg(

@@ -36,6 +36,8 @@ class DynamicAugStore(Mapping[str, Any]):
         rj = cfg.resize_jitter_scale()
         self._data.update({
             "random_rotate_deg": cfg.random_rotate_deg,
+            "rotate_deg_range": cfg.rotate_deg_range,
+            "rotate_p": cfg.rotate_p,
             "resize_jitter_lo": rj[0] if rj else 0.0,
             "resize_jitter_hi": rj[1] if rj else 0.0,
             "global_scale_lo": cfg.global_scale[0],
@@ -90,6 +92,14 @@ class DynamicRandomRotation(nn.Module):
         self.dynamic = dynamic
 
     def forward(self, sample):
+        if float(self.dynamic.get("rotate_p", 1.0)) <= 0:
+            return sample
+        if torch.rand(()) > float(self.dynamic["rotate_p"]):
+            return sample
+        rdr = self.dynamic.get("rotate_deg_range")
+        if rdr is not None:
+            lo, hi = float(rdr[0]), float(rdr[1])
+            return v2.RandomRotation(degrees=(lo, hi))(sample)
         deg = self.dynamic["random_rotate_deg"]
         if deg is None:
             return v2.RandomRotation(degrees=(0, 180))(sample)
@@ -422,8 +432,10 @@ class _ImageTransform(nn.Module):
         return img
 
 
-def _rotation_op(variant, random_rotate_deg=None):
+def _rotation_op(variant, random_rotate_deg=None, rotate_deg_range=None):
     """In-plane rotation before the final crop (after any downsample in crop_down)."""
+    if rotate_deg_range is not None:
+        return v2.RandomRotation(degrees=(rotate_deg_range[0], rotate_deg_range[1]))
     if random_rotate_deg is None:
         if variant == "tomo2":
             return v2.RandomRotation(degrees=(0, 180))
@@ -451,6 +463,20 @@ def _crop_op(img_size, scale, crop_mode, crop_size=None,
     raise ValueError(f"unknown crop_mode: {crop_mode!r}")
 
 
+def _append_rotation(ops, cfg: AugmentationConfig,
+                     dynamic: Optional[DynamicAugStore] = None):
+    if dynamic is not None:
+        ops.append(DynamicRandomRotation(dynamic))
+        return
+    rot = _rotation_op(cfg.variant, cfg.random_rotate_deg, cfg.rotate_deg_range)
+    if rot is None:
+        return
+    if cfg.rotate_p >= 1.0:
+        ops.append(rot)
+    elif cfg.rotate_p > 0:
+        ops.append(v2.RandomApply([rot], p=cfg.rotate_p))
+
+
 def _geom_ops(cfg: AugmentationConfig, img_size: int, scale_band: str,
               dynamic: Optional[DynamicAugStore] = None, crop_size=None):
     """Geometry on the slice before intensity aug."""
@@ -460,12 +486,7 @@ def _geom_ops(cfg: AugmentationConfig, img_size: int, scale_band: str,
     ops = []
     if crop_mode == "crop_down":
         ops.append(DownsampleHalf())
-    if dynamic is not None:
-        ops.append(DynamicRandomRotation(dynamic))
-    else:
-        rot = _rotation_op(cfg.variant, cfg.random_rotate_deg)
-        if rot is not None:
-            ops.append(rot)
+    _append_rotation(ops, cfg, dynamic=dynamic)
     if cfg.hflip_p > 0:
         ops.append(v2.RandomHorizontalFlip(p=cfg.hflip_p))
     if cfg.vflip_p > 0:

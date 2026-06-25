@@ -180,15 +180,17 @@ class PooledStageSIGReg(nn.Module):
 class ImageGroupedStageSIGReg(nn.Module):
     """SIGReg on FG token subsamples with **slice-balanced** calibration (pyramid path).
 
-    Returns a **per-independent-slice** statistic: ``stat * n_slices / n_tokens``.
+    Returns a **per-batch-slice** statistic: ``stat * n_batch_slices / n_tokens``.
     The matching ``beta_sig`` entry weights that scale and is **not** comparable
     to the intensive :class:`StageSIGReg` used when ``legacy_jepa=True``.
 
     Each image contributes ``n_tokens_per_slice`` tokens (not one pooled vector).
     The core :class:`SIGReg` multiplies its statistic by the token count ``N``;
     correlated tokens from the same slice must not inflate that count. We
-    re-scale by ``n_slices / N`` so the term is calibrated to the number of
-    **independent images** in the batch + FIFO queue (SSL / LeJEPA batch scale).
+    re-scale by ``n_batch_slices / N`` so the loss magnitude tracks the current
+    mini-batch (SSL / LeJEPA batch scale). Detached FIFO queue slices are
+    included in the CF estimate for sharper statistics but do **not** multiply
+    the returned value -- ``beta_sig`` stays stable as the queue fills.
 
     Projection directions are capped by ``n_dirs`` (bounded by latent dim) and
     ``n_slices``; optional rank-based capping is off by default because
@@ -296,8 +298,8 @@ class ImageGroupedStageSIGReg(nn.Module):
         stat = self.sig(est.unsqueeze(0))
         self.sig.n_sketches = old_n
 
-        # Core SIGReg ~ O(n_tokens); rescale to O(n_slices) independent units.
-        stat = stat * (float(n_slices) / max(1, n_tokens))
+        # Core SIGReg ~ O(n_tokens); rescale to O(n_batch_slices) (queue-free).
+        stat = stat * (float(n_batch_slices) / max(1, n_tokens))
         loss = stat + self.w_mean * mu.square().sum()
 
         if self.queue_len > 0:

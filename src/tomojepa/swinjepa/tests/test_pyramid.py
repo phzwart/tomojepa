@@ -6,15 +6,39 @@ from tomojepa.swinjepa.model import SwinMSJEPA
 from tomojepa.swinjepa.pyramid import (
     CoarseMIMHead, hierarchical_residuals, reconstruct_from_residuals,
     upsample_stage, pyramid_band_residuals, pyramid_sigreg_features,
+    assemble_coarse_field, scatter_masked, build_residual_aligns,
 )
 from tomojepa.swinjepa.sigreg import ImageGroupedStageSIGReg, PooledStageSIGReg
 from .conftest import small_cfg
 import pytest
 
 
+def test_lat_dims_broadcast_single_value():
+    cfg = small_cfg(lat_dims=(32,))
+    assert cfg.lat_dims == (32, 32, 32, 32)
+
+
+def test_lat_dims_per_stage_pyramid():
+    cfg = small_cfg(lat_dims=(32, 24, 16, 8), legacy_jepa=False, sigreg_queue_len=0)
+    model = SwinMSJEPA(cfg)
+    assert model.lat_chans == [32, 24, 16, 8]
+    assert set(model.residual_align.keys()) == {"s4", "s3", "s2", "s1"}
+
+
+def test_funnel_lat_dims_residual_reconstruct():
+    torch.manual_seed(0)
+    grids = [(16, 16), (8, 8), (4, 4), (2, 2)]
+    lat = (32, 24, 16, 8)
+    E = {f"s{i + 1}": torch.randn(1, lat[i], *grids[i]) for i in range(4)}
+    C4 = torch.randn(1, lat[3], 2, 2)
+    aligns = build_residual_aligns(lat)
+    R = hierarchical_residuals(E, C4, grids, residual_align=aligns)
+    E_hat = reconstruct_from_residuals(C4, R, E, grids, residual_align=aligns)
+    for key in ("s1", "s2", "s3"):
+        assert torch.allclose(E_hat[key], E[key], atol=1e-5)
+
+
 def test_lat_dims_equal_required_for_pyramid():
-    with pytest.raises(ValueError, match="equal lat_dims"):
-        small_cfg(lat_dims=(32, 64, 32, 32), legacy_jepa=False)
     SwinMSJEPA(small_cfg(lat_dims=(32, 32, 32, 32), legacy_jepa=False))
     SwinMSJEPA(small_cfg(lat_dims=(32, 64, 32, 32), legacy_jepa=True))
 
@@ -44,9 +68,10 @@ def test_hierarchical_residuals_reconstruct():
 
 
 def test_coarse_mae_grad():
-    """Grad reaches CoarseMIMHead; R3 targets do not backprop into C4."""
+    """Grad reaches CoarseMIMHead in conv mode; R3 targets do not backprop into C4."""
     torch.manual_seed(0)
-    model = SwinMSJEPA(small_cfg(sigreg_queue_len=0)).train()
+    model = SwinMSJEPA(
+        small_cfg(sigreg_queue_len=0, coarse_mim_mode="conv")).train()
     x = torch.randn(2, 1, 64, 64)
     loss, _ = model.compute_loss(x, step=0, total_steps=10)
     model.zero_grad(set_to_none=True)
@@ -228,8 +253,53 @@ def test_pyramid_sigreg_features_s4_c4():
     assert torch.allclose(feats["s4"], C4)
 
 
+def test_assemble_coarse_field():
+    """Visible cells keep ctx; masked cells take cross-attn predictions."""
+    torch.manual_seed(0)
+    from tomojepa.swinjepa.losses import gather_masked
+    ctx = torch.randn(2, 8, 4, 4)
+    mask = torch.zeros(2, 4, 4, dtype=torch.bool)
+    mask[:, :2, :2] = True
+    pred = torch.randn(2, 4, 8)
+    C4 = assemble_coarse_field(ctx, pred, mask)
+    assert torch.allclose(C4[~mask.unsqueeze(1).expand_as(C4)].reshape(-1),
+                          ctx[~mask.unsqueeze(1).expand_as(ctx)].reshape(-1))
+    gathered = gather_masked(C4, mask)
+    assert torch.allclose(gathered, pred)
+
+
+def test_scatter_gather_roundtrip():
+    from tomojepa.swinjepa.losses import gather_masked
+    feat = torch.randn(2, 8, 4, 4)
+    mask = torch.zeros(2, 4, 4, dtype=torch.bool)
+    mask[:, 1:, 1:] = True
+    pred = gather_masked(feat, mask) + 1.0
+    out = scatter_masked(feat, pred, mask)
+    assert torch.allclose(gather_masked(out, mask), pred)
+
+
+def test_cross_attn_s4_mae_grad():
+    """cross_attn mode: MAE grad reaches predictor, not CoarseMIMHead."""
+    torch.manual_seed(0)
+    model = SwinMSJEPA(small_cfg(
+        sigreg_queue_len=0,
+        stage_base_weights=(0.0, 0.0, 0.0, 1.0),
+        beta_sig=(0.0, 0.0, 0.0, 0.0),
+    )).train()
+    x = torch.randn(2, 1, 64, 64)
+    loss, logs = model.compute_loss(x, step=0, total_steps=10)
+    assert torch.isfinite(loss)
+    assert logs["l_mae"] > 0
+    model.zero_grad(set_to_none=True)
+    loss.backward()
+    pw = model.predictor.linear_out[-1].weight.grad
+    assert pw is not None and float(pw.norm()) > 0
+    cw = model.coarse_head.head[0].weight.grad
+    assert cw is None or float(cw.norm()) == 0.0
+
+
 def test_s4_isolate_sigreg_on_e4():
-    """s4-only weights: pred off, SIGReg on E4 base, MAE on."""
+    """s4-only weights: conv MAE, SIGReg on E4 base."""
     torch.manual_seed(0)
     cfg = small_cfg(
         stage_base_weights=(0.0, 0.0, 0.0, 1.0),
@@ -237,6 +307,7 @@ def test_s4_isolate_sigreg_on_e4():
         sigreg_s4_on="e4",
         sigreg_queue_len=0,
         predictor_enabled=False,
+        coarse_mim_mode="conv",
     )
     model = SwinMSJEPA(cfg)
     x = torch.randn(2, 1, 64, 64)
@@ -251,6 +322,67 @@ def test_s4_isolate_sigreg_on_e4():
     loss.backward()
     w = model.lateral["s4"].weight.grad
     assert w is not None and float(w.norm()) > 0
+
+
+def test_s4_isolate_cross_attn():
+    """Isolate s4 with cross-attn MAE runs and logs cosine diagnostic."""
+    torch.manual_seed(0)
+    cfg = small_cfg(
+        stage_base_weights=(0.0, 0.0, 0.0, 1.0),
+        beta_sig=(0.0, 0.0, 0.0, 0.5),
+        sigreg_s4_on="e4",
+        sigreg_queue_len=0,
+    )
+    model = SwinMSJEPA(cfg).train()
+    x = torch.randn(2, 1, 64, 64)
+    loss, logs = model.compute_loss(x, step=0, total_steps=10)
+    assert torch.isfinite(loss)
+    assert logs["l_mae"] > 0
+    assert logs["mae/cos"] >= -1.0
+    assert logs["effrank/s4"] > 0
+
+
+def test_sigreg_cos_gate_latches_and_ramps():
+    """s4 SIGReg stays off until cos EMA crosses level, then ramps in."""
+    torch.manual_seed(0)
+    cfg = small_cfg(
+        stage_base_weights=(0.0, 0.0, 0.0, 1.0),
+        beta_sig=(0.0, 0.0, 0.0, 0.01),
+        sigreg_s4_on="e4",
+        sigreg_queue_len=0,
+        s4_cosine_level=0.60,
+        s4_cosine_ema_decay=0.01,
+        s4_sigreg_fallback_progress=1.0,
+        s4_sigreg_ramp_progress=0.20,
+    )
+    model = SwinMSJEPA(cfg).train()
+    x = torch.randn(2, 1, 64, 64)
+    _, logs0 = model.compute_loss(x, step=0, total_steps=100)
+    assert logs0["sigreg/cos_gate"] == 0.0
+    assert logs0["sigreg/cos_latched"] == 0.0
+    assert logs0["sig/s4"] == 0.0
+    assert logs0["sig/raw/s4"] > 0.0
+
+    model.note_mae_cos(0.55)
+    _, logs1 = model.compute_loss(x, step=1, total_steps=100)
+    assert logs1["sigreg/cos_gate"] == 0.0
+
+    model.note_mae_cos(0.65)
+    _, logs2 = model.compute_loss(x, step=2, total_steps=100)
+    assert logs2["sigreg/cos_latched"] == 1.0
+    assert logs2["sigreg/cos_gate"] == pytest.approx(0.0)
+    assert logs2["sig/s4"] == 0.0
+
+    _, logs12 = model.compute_loss(x, step=12, total_steps=100)
+    assert logs12["sigreg/cos_gate"] == pytest.approx(0.5)
+    _, logs22 = model.compute_loss(x, step=22, total_steps=100)
+    assert logs22["sigreg/cos_gate"] == pytest.approx(1.0)
+
+
+def test_cross_attn_requires_predictor():
+    import pytest
+    with pytest.raises(ValueError, match="cross_attn"):
+        small_cfg(coarse_mim_mode="cross_attn", predictor_enabled=False)
 
 
 def test_pyramid_compute_loss():

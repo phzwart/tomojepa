@@ -29,6 +29,16 @@ def test_augmentation_config_from_dict():
     assert cfg.blur_kernel_size == 5
 
 
+def test_rotate_block_yaml():
+    cfg = augmentation_config_from_dict({
+        "rotate": {"p": 0.5, "deg": 90},
+        "hflip_p": 0.3,
+    })
+    assert cfg.rotate_p == 0.5
+    assert cfg.random_rotate_deg == 90.0
+    assert cfg.hflip_p == 0.3
+
+
 def test_load_job_yaml_includes_augmentations():
     sched, aug_cfg, aug_sched, meta = load_job_yaml(_B1)
     assert sched is not None

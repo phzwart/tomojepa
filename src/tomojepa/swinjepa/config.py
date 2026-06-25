@@ -11,7 +11,7 @@ base loss weights) are carried as length-``S`` tuples ordered ``s1..s4`` so they
 map cleanly onto ``argparse`` ``nargs``.
 """
 from dataclasses import dataclass, fields, MISSING
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 import warnings
 
 
@@ -19,6 +19,7 @@ import warnings
 class SwinMSJEPAConfig:
     # ---- input -------------------------------------------------------------
     backbone_name: str = "swin_tiny_patch4_window7_224"
+    backbone_embed_dim: Optional[int] = None    # timm embed_dim override; stages=[e,2e,4e,8e]
     in_chans: int = 1                         # grayscale microCT
     img_size: int = 224                       # set from repo tile size (fallback 224)
     drop_path_rate: float = 0.1
@@ -37,7 +38,13 @@ class SwinMSJEPAConfig:
     pred_heads: int = 6
     pred_mlp_ratio: float = 4.0
     predictor_cross_scale: bool = True        # attend across all stages
-    predictor_enabled: bool = True            # False -> pure data2vec path
+    predictor_enabled: bool = True            # False -> pure data2vec path (cross_attn only)
+    coarse_mim_mode: str = "integrated"       # integrated | cross_attn | conv
+    fusion_depth: int = 1                     # integrated: cross-scale fusion blocks
+    fusion_heads: int = 4
+    fusion_mlp_ratio: float = 4.0
+    fusion_cross_scale: bool = True           # attend to same + coarser stages
+    dual_view: bool = True                    # student view 0 / teacher view 1
 
     # ---- target construction ----------------------------------------------
     target_norm: str = "ln"                   # ln | whiten | none
@@ -86,6 +93,14 @@ class SwinMSJEPAConfig:
     sigreg_scale: Tuple[float, ...] = (1.0, 1.0, 1.0, 1.0)   # scale_s
     sigreg_rebalance_by_dim: bool = False       # multiply scale_s by 1/C_s
 
+    # ---- cos-gated SIGReg on s4 (pyramid cross-attn MAE) ------------------
+    # When s4_cosine_level > 0, s4 beta_sig is scaled by a one-way gate: MAE-only
+    # until mae/cos EMA exceeds the level (or fallback progress), then ramped in.
+    s4_cosine_level: float = 0.0                # 0 = disabled; e.g. 0.60
+    s4_cosine_ema_decay: float = 0.9
+    s4_sigreg_fallback_progress: float = 0.30   # latch SIGReg if cos never hits level
+    s4_sigreg_ramp_progress: float = 0.10     # beta scale 0->1 over this progress span
+
     # ---- pyramid residual parent definition --------------------------------
     strict_laplacian: bool = False               # pool(child) parents when True
 
@@ -98,7 +113,9 @@ class SwinMSJEPAConfig:
     fg_key: str = ""                            # optional precomputed mask array key
 
     # ---- per-stage JEPA latent (1x1 lateral projections) ------------------
-    # Length S tuple (s1..s4): each stage maps backbone C_s -> lat_dims[s].
+    # Length S tuple (s1..s4): backbone C_s -> lat_dims[s]. Per-stage widths
+    # are allowed in pyramid mode; cross-scale residual parents are aligned via
+    # 1x1 convs when adjacent stage widths differ.
     lat_dims: Tuple[int, ...] = (64, 64, 64, 64)
 
     # ---- optimization ------------------------------------------------------
@@ -125,17 +142,46 @@ class SwinMSJEPAConfig:
         return sc
 
     def __post_init__(self):
+        if len(self.lat_dims) == 1:
+            self.lat_dims = self.lat_dims * self.num_stages
         if len(self.lat_dims) != self.num_stages:
             raise ValueError(
                 f"lat_dims must have {self.num_stages} entries (s1..s4), "
                 f"got {len(self.lat_dims)}: {self.lat_dims}")
         if any(d <= 0 for d in self.lat_dims):
             raise ValueError(f"lat_dims entries must be positive, got {self.lat_dims}")
-        if not self.legacy_jepa and len(set(self.lat_dims)) != 1:
+        if self.backbone_embed_dim is not None and self.backbone_embed_dim <= 0:
             raise ValueError(
-                "pyramid residual algebra requires equal lat_dims across s1..s4 "
-                "(R_s = E_s - up(parent) subtracts tensors of the same width); "
-                "use legacy_jepa=True for per-stage widths or set lat_dims to one shared value")
+                f"backbone_embed_dim must be positive when set, got {self.backbone_embed_dim}")
+        if self.coarse_mim_mode == "cross_attn":
+            if self.pred_dim > max(self.lat_dims) * 4:
+                warnings.warn(
+                    f"pred_dim={self.pred_dim} is much larger than max(lat_dims)="
+                    f"{max(self.lat_dims)}; cross-attn predictor memory scales with pred_dim",
+                    stacklevel=2)
+            if self.pred_dim % self.pred_heads != 0:
+                raise ValueError(
+                    f"pred_dim={self.pred_dim} must be divisible by "
+                    f"pred_heads={self.pred_heads}")
+            if (self.pred_dim // self.pred_heads) % 4 != 0:
+                raise ValueError(
+                    f"pred_dim / pred_heads = {self.pred_dim // self.pred_heads} must be "
+                    f"divisible by 4 for RoPE (pred_dim={self.pred_dim}, "
+                    f"pred_heads={self.pred_heads})")
+        if self.coarse_mim_mode == "integrated":
+            if not self.dual_view:
+                raise ValueError("coarse_mim_mode='integrated' requires dual_view=True")
+            for c in self.lat_dims:
+                if c % self.fusion_heads != 0:
+                    raise ValueError(
+                        f"each lat_dims entry must be divisible by fusion_heads="
+                        f"{self.fusion_heads}, got lat_dims={self.lat_dims}")
+                if self.use_rope and (c // self.fusion_heads) % 4 != 0:
+                    raise ValueError(
+                        f"lat_dim {c} / fusion_heads {self.fusion_heads} must yield "
+                        f"head_dim divisible by 4 for RoPE")
+            if self.fusion_depth < 1:
+                raise ValueError(f"fusion_depth must be >= 1, got {self.fusion_depth}")
         if len(self.beta_sig) == 1:
             self.beta_sig = self.beta_sig * self.num_stages
         if len(self.beta_sig) != self.num_stages:
@@ -172,6 +218,31 @@ class SwinMSJEPAConfig:
         if self.sigreg_s4_on not in ("e4", "c4"):
             raise ValueError(
                 f"sigreg_s4_on must be 'e4' or 'c4', got {self.sigreg_s4_on!r}")
+        if self.coarse_mim_mode not in ("integrated", "cross_attn", "conv"):
+            raise ValueError(
+                f"coarse_mim_mode must be 'integrated', 'cross_attn', or 'conv', "
+                f"got {self.coarse_mim_mode!r}")
+        if (not self.legacy_jepa and self.coarse_mim_mode == "cross_attn"
+                and not self.predictor_enabled):
+            raise ValueError(
+                "coarse_mim_mode='cross_attn' requires predictor_enabled=True")
+        if self.coarse_mim_mode == "integrated" and self.legacy_jepa:
+            raise ValueError(
+                "coarse_mim_mode='integrated' is incompatible with legacy_jepa=True")
+        if not (0.0 <= self.s4_cosine_level <= 1.0):
+            raise ValueError(
+                f"s4_cosine_level must be in [0, 1], got {self.s4_cosine_level}")
+        if not (0.0 < self.s4_cosine_ema_decay < 1.0):
+            raise ValueError(
+                f"s4_cosine_ema_decay must be in (0, 1), got {self.s4_cosine_ema_decay}")
+        if not (0.0 < self.s4_sigreg_fallback_progress <= 1.0):
+            raise ValueError(
+                f"s4_sigreg_fallback_progress must be in (0, 1], "
+                f"got {self.s4_sigreg_fallback_progress}")
+        if not (0.0 <= self.s4_sigreg_ramp_progress <= 1.0):
+            raise ValueError(
+                f"s4_sigreg_ramp_progress must be in [0, 1], "
+                f"got {self.s4_sigreg_ramp_progress}")
 
 
 # Tuple-valued fields take ``nargs`` from argparse; map element types here.
@@ -197,6 +268,10 @@ def add_argparse_args(parser):
     for f in fields(SwinMSJEPAConfig):
         default = f.default if f.default is not MISSING else None
         flag = "--" + f.name
+        if f.name == "backbone_embed_dim":
+            parser.add_argument(flag, type=int, default=default,
+                                help="timm embed_dim override; stages=[e,2e,4e,8e]")
+            continue
         if f.name in _TUPLE_ELEM_TYPE:
             parser.add_argument(flag, type=_TUPLE_ELEM_TYPE[f.name], nargs="+",
                                 default=list(default) if default is not None else None)

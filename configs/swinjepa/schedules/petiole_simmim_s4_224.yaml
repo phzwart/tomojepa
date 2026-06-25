@@ -1,0 +1,66 @@
+# SwinSimMIM s4-only isolate @ 224 — dual-aug, raw E_s MAE + SIGReg.
+#
+#   python -m tomojepa.swinjepa.train_simmim \
+#     --schedule configs/swinjepa/schedules/petiole_simmim_s4_224.yaml \
+#     --backbone_embed_dim 36 --lat_dims 36 36 36 36 \
+#     --s4_cosine_level 0.4 --foreground_mask --fg_mode circle \
+#     --fg_circle_diameter_frac 1.05 --max_iters 500
+
+name: petiole_simmim_s4_224
+
+run:
+  img_size: 224
+  batch_size: 16
+
+stages:
+  s1:
+    active:
+      - {progress: 0.00, value: 0.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.0}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s2:
+    active:
+      - {progress: 0.00, value: 0.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.0}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s3:
+    active:
+      - {progress: 0.00, value: 0.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.0}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s4:
+    active:
+      - {progress: 0.00, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 0.5}
+    freeze:
+      - {progress: 0.00, value: false}
+
+augmentations:
+  variant: tomo2
+  crop_mode: resize
+  global_views: 2
+  local_views: 0
+  window:
+    p_low: 0.01
+    p_high: 0.99
+    sample_size: 100000
+  blur:
+    kernel_size: 7
+    sigma: [0.1, 1.0]
+  poisson:
+    scale: 10000
+  pixel_mask:
+    ratio: 0.15
+  normalize:
+    mean: 0.5
+    std: 0.5

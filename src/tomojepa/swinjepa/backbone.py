@@ -53,6 +53,8 @@ class SwinMultiScaleBackbone(nn.Module):
         drop_path_rate: stochastic depth for the Swin blocks.
         use_rope: replace timm relative-position bias with 2D RoPE on Q/K.
         rope_theta: RoPE frequency base (see :mod:`tomojepa.vitup.rope2d`).
+        embed_dim: optional timm ``embed_dim`` override; stage widths become
+            ``[e, 2e, 4e, 8e]``. ``None`` uses the model-name default.
 
     The public forward returns ``{"s1".."s4": [B, C_s, h_s, w_s]}``.
     """
@@ -60,21 +62,25 @@ class SwinMultiScaleBackbone(nn.Module):
     def __init__(self, model_name: str = "swin_tiny_patch4_window7_224",
                  img_size: int = 224, in_chans: int = 1, pretrained: bool = False,
                  drop_path_rate: float = 0.1, use_rope: bool = True,
-                 rope_theta: float = 100.0):
+                 rope_theta: float = 100.0, embed_dim: Optional[int] = None):
         super().__init__()
         self.model_name = model_name
         self.img_size = img_size
         self.in_chans = in_chans
         self.use_rope = use_rope
         self.rope_theta = rope_theta
+        self.embed_dim = embed_dim
         if use_rope and pretrained:
             raise ValueError(
                 "use_rope=True is incompatible with pretrained=True: timm weights "
                 "include a relative-position bias table, not RoPE parameters.")
-        swin = timm.create_model(
-            model_name, pretrained=pretrained, num_classes=0,
+        create_kwargs = dict(
+            pretrained=pretrained, num_classes=0,
             img_size=img_size, in_chans=in_chans, drop_path_rate=drop_path_rate,
         )
+        if embed_dim is not None:
+            create_kwargs["embed_dim"] = embed_dim
+        swin = timm.create_model(model_name, **create_kwargs)
         if getattr(swin, "output_fmt", "NHWC") != "NHWC":
             raise RuntimeError(
                 f"Expected an NHWC Swin (timm>=1.0); got output_fmt="

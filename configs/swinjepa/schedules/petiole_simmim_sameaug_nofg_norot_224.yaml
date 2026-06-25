@@ -1,0 +1,75 @@
+# SwinSimMIM full pyramid @ 224 — shared aug, no FG/circle mask, no rotation.
+#
+#   python -m tomojepa.swinjepa.train_simmim \
+#     --schedule configs/swinjepa/schedules/petiole_simmim_sameaug_nofg_norot_224.yaml \
+#     --backbone_embed_dim 36 --lat_dims 36 36 36 36 \
+#     --stage_base_weights 10 10 10 100 \
+#     --s4_cosine_level 0 \
+#     --beta_sig 1.0 1.0 1.0 1.0 --epochs 20 \
+#     --mask_ratio 0.45
+
+name: petiole_simmim_sameaug_nofg_norot_224
+
+run:
+  img_size: 224
+  batch_size: 16
+
+stages:
+  s1:
+    active:
+      - {progress: 0.00, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 1.0}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s2:
+    active:
+      - {progress: 0.00, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 1.0}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s3:
+    active:
+      - {progress: 0.00, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 1.0}
+    freeze:
+      - {progress: 0.00, value: false}
+
+  s4:
+    active:
+      - {progress: 0.00, value: 1.0}
+    beta_sig:
+      - {progress: 0.00, value: 1.0}
+    freeze:
+      - {progress: 0.00, value: false}
+
+augmentations:
+  variant: tomo2
+  crop_mode: resize
+  global_views: 2
+  local_views: 0
+  shared_global_aug: true
+  rotate:
+    p: 0
+    deg: 0
+  hflip_p: 0.5
+  vflip_p: 0.5
+  resize_jitter: [0.9, 1.1]
+  window:
+    p_low: 0.01
+    p_high: 0.99
+    sample_size: 100000
+  blur:
+    kernel_size: 7
+    sigma: [0.1, 1.0]
+  poisson:
+    scale: 10000
+  pixel_mask:
+    ratio: 0.15
+  normalize:
+    mean: 0.5
+    std: 0.5

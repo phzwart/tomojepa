@@ -8,7 +8,7 @@ passed on the command line.
 Schedulable channels (piecewise linear in progress, same knot format as
 :class:`tomojepa.swinjepa.schedule.TrainingSchedule`):
 
-- ``random_rotate_deg``, ``equalize_p``, ``blur_p``, ``poisson_p``,
+- ``random_rotate_deg``, ``rotate_p``, ``equalize_p``, ``blur_p``, ``poisson_p``,
   ``pixel_mask_p``
 - ``resize_jitter`` — ``[lo, hi]`` pair; ``[0, 0]`` or ``null`` disables
 - ``global_scale``, ``local_scale`` — ``[min, max]`` RandomResizedCrop bands
@@ -36,6 +36,7 @@ _interp_bool_sticky = interp_bool_sticky
 
 _SCHEDULABLE_NUMERIC = (
     "random_rotate_deg",
+    "rotate_p",
     "equalize_p",
     "blur_p",
     "poisson_p",
@@ -58,10 +59,14 @@ class AugmentationConfig:
     crop_mode: str = "resized"
     global_views: int = 1
     local_views: int = 0
+    # Apply global_tf once and replicate for every global view (SimMIM: mask-only diff).
+    shared_global_aug: bool = False
     global_scale: Tuple[float, float] = (0.4, 1.0)
     local_scale: Tuple[float, float] = (0.1, 0.4)
     # None -> legacy tomo2 half-turn; 0 -> off; >0 -> symmetric +/- deg
     random_rotate_deg: Optional[float] = 180.0
+    rotate_deg_range: Optional[Tuple[float, float]] = None  # e.g. (5, 175) overrides +/- deg
+    rotate_p: float = 1.0
     # None or (0,0) -> disabled
     resize_jitter: Optional[Tuple[float, float]] = (0.9, 1.1)
     hflip_p: float = 0.0
@@ -99,8 +104,12 @@ class AugmentationConfig:
 
     def summary_line(self) -> str:
         rj = self.resize_jitter_scale()
-        rot = (f"rotate=+/-{self.random_rotate_deg}deg" if self.random_rotate_deg
-               else ("rotate=legacy" if self.random_rotate_deg is None else "rotate=off"))
+        rot = (
+            f"rotate=[{self.rotate_deg_range[0]:g},{self.rotate_deg_range[1]:g}]deg"
+            if self.rotate_deg_range
+            else (f"rotate=+/-{self.random_rotate_deg}deg" if self.random_rotate_deg
+                  else ("rotate=legacy" if self.random_rotate_deg is None else "rotate=off"))
+        )
         parts = [
             f"variant={self.variant}",
             f"crop={self.crop_mode}",
@@ -113,8 +122,14 @@ class AugmentationConfig:
             parts.append(f"hflip_p={self.hflip_p:g}")
         if self.vflip_p > 0:
             parts.append(f"vflip_p={self.vflip_p:g}")
+        if self.rotate_p < 1.0 and (
+            self.rotate_deg_range or (self.random_rotate_deg or 0) != 0
+        ):
+            parts.append(f"rotate_p={self.rotate_p:g}")
         if not self.intensity_augment:
             parts.append("intensity=off")
+        if self.shared_global_aug:
+            parts.append("shared_global_aug")
         return "; ".join(parts)
 
 
@@ -126,6 +141,7 @@ class AugmentationState:
     resize_jitter: Optional[Tuple[float, float]]
     global_scale: Tuple[float, float]
     local_scale: Tuple[float, float]
+    rotate_p: float
     equalize_p: float
     blur_p: float
     poisson_p: float
@@ -256,6 +272,7 @@ class AugmentationSchedule:
             resize_jitter=opt_pair("resize_jitter", base.resize_jitter_scale()),
             global_scale=pair("global_scale", base.global_scale),
             local_scale=pair("local_scale", base.local_scale),
+            rotate_p=num("rotate_p", base.rotate_p),
             equalize_p=num("equalize_p", base.equalize_p),
             blur_p=num("blur_p", base.blur_p),
             poisson_p=num("poisson_p", base.poisson_p),
@@ -308,6 +325,8 @@ def augmentation_config_from_dict(data: Optional[Mapping[str, Any]]) -> Augmenta
         kwargs["global_views"] = int(data["global_views"])
     if "local_views" in data:
         kwargs["local_views"] = int(data["local_views"])
+    if "shared_global_aug" in data:
+        kwargs["shared_global_aug"] = bool(data["shared_global_aug"])
     if "global_scale" in data:
         kwargs["global_scale"] = _pair_from_yaml(data["global_scale"], "global_scale")
     if "local_scale" in data:
@@ -315,6 +334,20 @@ def augmentation_config_from_dict(data: Optional[Mapping[str, Any]]) -> Augmenta
     if "random_rotate_deg" in data:
         v = data["random_rotate_deg"]
         kwargs["random_rotate_deg"] = None if v is None else float(v)
+    if "rotate_p" in data:
+        kwargs["rotate_p"] = float(data["rotate_p"])
+    if "rotate" in data:
+        r = data["rotate"]
+        if not isinstance(r, Mapping):
+            raise ValueError("augmentations.rotate must be a mapping")
+        if "p" in r:
+            kwargs["rotate_p"] = float(r["p"])
+        if "deg" in r:
+            v = r["deg"]
+            if isinstance(v, (list, tuple)) and len(v) == 2:
+                kwargs["rotate_deg_range"] = (float(v[0]), float(v[1]))
+            else:
+                kwargs["random_rotate_deg"] = None if v is None else float(v)
     if "resize_jitter" in data:
         kwargs["resize_jitter"] = _optional_pair_from_yaml(
             data["resize_jitter"], "resize_jitter")
@@ -440,6 +473,7 @@ def state_to_dynamic_dict(state: AugmentationState) -> Dict[str, Any]:
         "global_scale_hi": state.global_scale[1],
         "local_scale_lo": state.local_scale[0],
         "local_scale_hi": state.local_scale[1],
+        "rotate_p": state.rotate_p,
         "equalize_p": state.equalize_p,
         "blur_p": state.blur_p,
         "poisson_p": state.poisson_p,

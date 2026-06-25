@@ -15,10 +15,12 @@ from .config import SwinMSJEPAConfig
 from .backbone import SwinMultiScaleBackbone
 from .mask import MultiScaleBlockMask
 from .predictor import CrossScalePredictor
+from .pyramid_fusion import PyramidBandFusion
 from .sigreg import StageSIGReg
 from .model import SwinMSJEPA, SwinMSEncoder
 
 __all__ = [
     "SwinMSJEPAConfig", "SwinMultiScaleBackbone", "MultiScaleBlockMask",
-    "CrossScalePredictor", "StageSIGReg", "SwinMSJEPA", "SwinMSEncoder",
+    "CrossScalePredictor", "PyramidBandFusion", "StageSIGReg", "SwinMSJEPA",
+    "SwinMSEncoder",
 ]

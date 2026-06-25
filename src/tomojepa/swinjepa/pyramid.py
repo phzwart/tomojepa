@@ -12,13 +12,36 @@ These residuals are low-redundancy but **not** strictly scale-orthogonal /
 Laplacian. With ``strict_laplacian=True``, each parent is
 ``up(avg_pool(E_s))`` so ``R_s`` is the within-cell high-frequency complement.
 """
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from tomojepa.core.model import masked_mean
+
+
+def build_residual_aligns(lat_dims: Sequence[int]) -> nn.ModuleDict:
+    """1x1 convs mapping upsampled coarse parents to finer stage latent width.
+
+    Keys ``s4..s1`` match residual bands in :func:`_band_residuals_core`.
+    Omitted when parent and child ``lat_dims`` already match.
+    """
+    pairs = {"s4": (2, 3), "s3": (3, 2), "s2": (2, 1), "s1": (1, 0)}
+    aligns = nn.ModuleDict()
+    for key, (parent_idx, child_idx) in pairs.items():
+        in_c, out_c = int(lat_dims[parent_idx]), int(lat_dims[child_idx])
+        if in_c != out_c:
+            aligns[key] = nn.Conv2d(in_c, out_c, kernel_size=1)
+    return aligns
+
+
+def _align_residual_parent(
+        feat: torch.Tensor, key: str,
+        aligns: Optional[nn.ModuleDict]) -> torch.Tensor:
+    if aligns is None or key not in aligns:
+        return feat
+    return aligns[key](feat)
 
 
 def upsample_stage(feat: torch.Tensor, grid_fine: Tuple[int, int]) -> torch.Tensor:
@@ -185,10 +208,12 @@ def hierarchical_residuals(
         grids: List[Tuple[int, int]],
         fg_stages: Optional[Dict[str, torch.Tensor]] = None,
         strict_laplacian: bool = False,
+        residual_align: Optional[nn.ModuleDict] = None,
 ) -> Dict[str, torch.Tensor]:
     """``R3,R2,R1`` from target-pass maps and stop-grad coarse parents."""
     out = _band_residuals_core(
-        E_full, C4, grids, strict_laplacian=strict_laplacian)
+        E_full, C4, grids, strict_laplacian=strict_laplacian,
+        residual_align=residual_align)
     out = {k: out[k] for k in ("s3", "s2", "s1")}
     if fg_stages is not None:
         out = {k: fg_gate(v, fg_stages[k]) for k, v in out.items()}
@@ -201,6 +226,7 @@ def pyramid_band_residuals(
         grids: List[Tuple[int, int]],
         fg_stages: Optional[Dict[str, torch.Tensor]] = None,
         strict_laplacian: bool = False,
+        residual_align: Optional[nn.ModuleDict] = None,
 ) -> Dict[str, torch.Tensor]:
     """Inter-scale band residuals (keys ``s1..s4``), including legacy ``r4`` band.
 
@@ -209,7 +235,8 @@ def pyramid_band_residuals(
     :func:`pyramid_sigreg_features` (coarse base at s4, residuals above).
     """
     out = _band_residuals_core(
-        E_full, C4, grids, strict_laplacian=strict_laplacian)
+        E_full, C4, grids, strict_laplacian=strict_laplacian,
+        residual_align=residual_align)
     if fg_stages is not None:
         out = {k: fg_gate(v, fg_stages[k]) for k, v in out.items()}
     return out
@@ -222,6 +249,7 @@ def pyramid_sigreg_features(
         fg_stages: Optional[Dict[str, torch.Tensor]] = None,
         strict_laplacian: bool = False,
         s4_on: str = "e4",
+        residual_align: Optional[nn.ModuleDict] = None,
 ) -> Dict[str, torch.Tensor]:
     """Per-stage tensors for pyramid SIGReg (keys ``s1..s4``).
 
@@ -232,7 +260,8 @@ def pyramid_sigreg_features(
     if s4_on not in ("e4", "c4"):
         raise ValueError(f"s4_on must be 'e4' or 'c4', got {s4_on!r}")
     bands = _band_residuals_core(
-        E_full, C4, grids, strict_laplacian=strict_laplacian)
+        E_full, C4, grids, strict_laplacian=strict_laplacian,
+        residual_align=residual_align)
     s4_feat = E_full["s4"] if s4_on == "e4" else C4
     out = {"s4": s4_feat, "s3": bands["s3"], "s2": bands["s2"], "s1": bands["s1"]}
     if fg_stages is not None:
@@ -245,9 +274,11 @@ def _band_residuals_core(
         C4: torch.Tensor,
         grids: List[Tuple[int, int]],
         strict_laplacian: bool = False,
+        residual_align: Optional[nn.ModuleDict] = None,
 ) -> Dict[str, torch.Tensor]:
     if strict_laplacian:
         e3_at_s4 = F.adaptive_avg_pool2d(E_full["s3"].detach(), grids[3])
+        e3_at_s4 = _align_residual_parent(e3_at_s4, "s4", residual_align)
         r4 = E_full["s4"] - e3_at_s4
         r3 = E_full["s3"] - _laplacian_parent(
             E_full["s3"].detach(), grids[2], grids[3])
@@ -257,14 +288,41 @@ def _band_residuals_core(
             E_full["s1"].detach(), grids[0], grids[1])
     else:
         e3_at_s4 = F.adaptive_avg_pool2d(E_full["s3"].detach(), grids[3])
+        e3_at_s4 = _align_residual_parent(e3_at_s4, "s4", residual_align)
         r4 = E_full["s4"] - e3_at_s4
-        c4_up = upsample_stage(C4.detach(), grids[2])
+        c4_up = _align_residual_parent(
+            upsample_stage(C4.detach(), grids[2]), "s3", residual_align)
         r3 = E_full["s3"] - c4_up
-        e3_up = upsample_stage(E_full["s3"].detach(), grids[1])
+        e3_up = _align_residual_parent(
+            upsample_stage(E_full["s3"].detach(), grids[1]), "s2", residual_align)
         r2 = E_full["s2"] - e3_up
-        e2_up = upsample_stage(E_full["s2"].detach(), grids[0])
+        e2_up = _align_residual_parent(
+            upsample_stage(E_full["s2"].detach(), grids[0]), "s1", residual_align)
         r1 = E_full["s1"] - e2_up
     return {"s4": r4, "s3": r3, "s2": r2, "s1": r1}
+
+
+def scatter_masked(feat: torch.Tensor, pred: torch.Tensor,
+                   mask_s: torch.Tensor) -> torch.Tensor:
+    """Write ``pred`` ``[B, k, C]`` into a copy of ``feat`` at masked positions."""
+    from .losses import gather_masked
+    b, c, h, w = feat.shape
+    out = feat.clone()
+    tok = out.permute(0, 2, 3, 1).reshape(b, h * w, c)
+    mflat = mask_s.reshape(b, h * w)
+    k = pred.shape[1]
+    row_counts = mflat.sum(1)
+    if not (row_counts == k).all():
+        raise ValueError(
+            f"scatter_masked: per-sample masked counts differ {row_counts.tolist()}")
+    tok[mflat] = pred.reshape(-1, c).to(tok.dtype)
+    return tok.reshape(b, h, w, c).permute(0, 3, 1, 2)
+
+
+def assemble_coarse_field(ctx_s4: torch.Tensor, pred_masked: torch.Tensor,
+                          mask_s4: torch.Tensor) -> torch.Tensor:
+    """Visible cells = student ctx; masked cells = cross-attn predictions."""
+    return scatter_masked(ctx_s4, pred_masked, mask_s4)
 
 
 def masked_coarse_mae(C4: torch.Tensor, target: torch.Tensor, mask: torch.Tensor,
@@ -285,6 +343,7 @@ def reconstruct_from_residuals(
         E_full: Dict[str, torch.Tensor],
         grids: List[Tuple[int, int]],
         strict_laplacian: bool = False,
+        residual_align: Optional[nn.ModuleDict] = None,
 ) -> Dict[str, torch.Tensor]:
     """Rebuild ``E_s ≈ parent_up + R_s`` for probe / sanity checks."""
     if strict_laplacian:
@@ -294,9 +353,15 @@ def reconstruct_from_residuals(
             "s2": _laplacian_parent(E_full["s2"], grids[1], grids[2]) + residuals["s2"],
             "s1": _laplacian_parent(E_full["s1"], grids[0], grids[1]) + residuals["s1"],
         }
+    s3_parent = _align_residual_parent(
+        upsample_stage(C4, E_full["s3"].shape[-2:]), "s3", residual_align)
+    s2_parent = _align_residual_parent(
+        upsample_stage(E_full["s3"], E_full["s2"].shape[-2:]), "s2", residual_align)
+    s1_parent = _align_residual_parent(
+        upsample_stage(E_full["s2"], E_full["s1"].shape[-2:]), "s1", residual_align)
     return {
         "s4": C4,
-        "s3": upsample_stage(C4, E_full["s3"].shape[-2:]) + residuals["s3"],
-        "s2": upsample_stage(E_full["s3"], E_full["s2"].shape[-2:]) + residuals["s2"],
-        "s1": upsample_stage(E_full["s2"], E_full["s1"].shape[-2:]) + residuals["s1"],
+        "s3": s3_parent + residuals["s3"],
+        "s2": s2_parent + residuals["s2"],
+        "s1": s1_parent + residuals["s1"],
     }

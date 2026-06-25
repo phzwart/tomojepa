@@ -15,16 +15,19 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from tomojepa.core.augmentations import build_fg_stages
 from .config import SwinMSJEPAConfig
 from .backbone import SwinMultiScaleBackbone
 from .mask import MultiScaleBlockMask, assert_mask_consistency
 from .predictor import CrossScalePredictor
+from .pyramid_fusion import PyramidBandFusion
 from .sigreg import StageSIGReg, ImageGroupedStageSIGReg
 from .pyramid import (CoarseMIMHead, hierarchical_residuals, masked_coarse_mae,
                       fg_gate, reconstruct_from_residuals, pyramid_band_residuals,
-                      pyramid_sigreg_features)
+                      pyramid_sigreg_features, assemble_coarse_field,
+                      build_residual_aligns, scatter_masked)
 from .losses import (stage_target_norm, gather_masked, lambda_schedule,
                      stage_active_schedule, masked_prediction_loss,
                      stage_feature_diagnostics)
@@ -81,12 +84,17 @@ class SwinMSJEPA(nn.Module):
         self.schedule: Optional[TrainingSchedule] = None
         self._steps_per_epoch: int = 1
         self._last_newly_frozen: List[str] = []
+        self._mae_cos_ema: Optional[float] = None
+        self._sigreg_cos_latched: bool = False
+        self._sigreg_gate_progress: Optional[float] = None
+        self._last_sigreg_cos_gate: float = 1.0
+        self._last_schedule_betas: List[float] = []
 
         self.backbone = SwinMultiScaleBackbone(
             model_name=cfg.backbone_name, img_size=cfg.img_size,
             in_chans=cfg.in_chans, pretrained=False,
             drop_path_rate=cfg.drop_path_rate, use_rope=cfg.use_rope,
-            rope_theta=cfg.rope_theta)
+            rope_theta=cfg.rope_theta, embed_dim=cfg.backbone_embed_dim)
         self.out_chans: List[int] = self.backbone.out_chans
         self.num_stages = self.backbone._num_stages
         self.grids = [self.backbone.stage_grid(s) for s in range(self.num_stages)]
@@ -98,6 +106,8 @@ class SwinMSJEPA(nn.Module):
             f"s{s + 1}": nn.Conv2d(self.out_chans[s], self.lat_chans[s], kernel_size=1)
             for s in range(self.num_stages)})
 
+        self.residual_align = build_residual_aligns(self.lat_chans)
+
         grid4 = self.backbone.stage_grid(self.num_stages - 1)
         self.mask_gen = MultiScaleBlockMask(
             grid4=grid4, num_stages=self.num_stages, mask_ratio=cfg.mask_ratio,
@@ -105,7 +115,15 @@ class SwinMSJEPA(nn.Module):
             block_scale_range=cfg.block_scale_range)
 
         self.predictor = None
-        if cfg.predictor_enabled:
+        self.fusion = None
+        if cfg.coarse_mim_mode == "integrated":
+            self.fusion = PyramidBandFusion(
+                out_chans=self.lat_chans, grids=self.grids,
+                depth=cfg.fusion_depth, heads=cfg.fusion_heads,
+                mlp_ratio=cfg.fusion_mlp_ratio,
+                cross_scale=cfg.fusion_cross_scale,
+                use_rope=cfg.use_rope, rope_theta=cfg.rope_theta)
+        elif cfg.predictor_enabled:
             self.predictor = CrossScalePredictor(
                 out_chans=self.lat_chans, grids=self.grids, dim=cfg.pred_dim,
                 depth=cfg.pred_depth, heads=cfg.pred_heads,
@@ -166,6 +184,11 @@ class SwinMSJEPA(nn.Module):
     def _stage_key(self, stage_idx: int) -> str:
         return f"s{stage_idx + 1}"
 
+    def _residual_align_for_pyramid(self) -> Optional[nn.ModuleDict]:
+        if len(self.residual_align) == 0:
+            return None
+        return self.residual_align
+
     def stage_frozen(self, stage_idx: int) -> bool:
         """True when stage ``s{stage_idx+1}`` is frozen (no loss, detached latents)."""
         return bool(self._frozen_stages[stage_idx].item())
@@ -199,15 +222,30 @@ class SwinMSJEPA(nn.Module):
             p.requires_grad = False
         if (not self.cfg.legacy_jepa
                 and stage_idx == self.num_stages - 1
-                and self.coarse_head is not None):
+                and self.coarse_head is not None
+                and self.cfg.coarse_mim_mode == "conv"):
             for p in self.coarse_head.parameters():
+                p.requires_grad = False
+        if (not self.cfg.legacy_jepa
+                and stage_idx == self.num_stages - 1
+                and self.fusion is not None
+                and self.cfg.coarse_mim_mode == "integrated"):
+            for p in self.fusion.parameters():
+                p.requires_grad = False
+        if (not self.cfg.legacy_jepa
+                and stage_idx == self.num_stages - 1
+                and self.predictor is not None
+                and self.cfg.coarse_mim_mode == "cross_attn"):
+            for p in self.predictor.parameters():
                 p.requires_grad = False
 
     def _stage_loss_weights(
             self, active: List[float], betas: List[float],
-            bases: List[float]) -> Tuple[List[float], List[float]]:
+            bases: List[float], pred_active: Optional[List[float]] = None,
+    ) -> Tuple[List[float], List[float]]:
         """Per-stage prediction (or s4 MAE) and SIGReg multipliers."""
-        pred = [float(bases[s]) * active[s] for s in range(self.num_stages)]
+        pa = pred_active if pred_active is not None else active
+        pred = [float(bases[s]) * pa[s] for s in range(self.num_stages)]
         sig = [betas[s] * active[s] for s in range(self.num_stages)]
         return pred, sig
 
@@ -265,6 +303,12 @@ class SwinMSJEPA(nn.Module):
         if self.coarse_head is not None:
             for p in self.coarse_head.parameters():
                 p.requires_grad = True
+        if self.predictor is not None:
+            for p in self.predictor.parameters():
+                p.requires_grad = True
+        if self.fusion is not None:
+            for p in self.fusion.parameters():
+                p.requires_grad = True
 
     def _sync_freeze_from_schedule(self, step: int, total_steps: int) -> List[str]:
         if self.schedule is None:
@@ -281,18 +325,65 @@ class SwinMSJEPA(nn.Module):
         self._last_newly_frozen = newly
         return newly
 
+    def _update_sigreg_cos_gate(self, step: int, total_steps: int) -> float:
+        """One-way cos/fallback latch; ramp s4 SIGReg beta multiplier in [0, 1]."""
+        if self.cfg.s4_cosine_level <= 0.0:
+            return 1.0
+        progress = float(step) / max(1, total_steps)
+        cos_ema = self._mae_cos_ema if self._mae_cos_ema is not None else 0.0
+        if not self._sigreg_cos_latched:
+            if cos_ema >= self.cfg.s4_cosine_level:
+                self._sigreg_cos_latched = True
+                self._sigreg_gate_progress = progress
+            elif progress >= self.cfg.s4_sigreg_fallback_progress:
+                self._sigreg_cos_latched = True
+                self._sigreg_gate_progress = progress
+        if not self._sigreg_cos_latched:
+            return 0.0
+        gate_p = self._sigreg_gate_progress if self._sigreg_gate_progress is not None else 0.0
+        ramp = self.cfg.s4_sigreg_ramp_progress
+        if ramp <= 0.0:
+            return 1.0
+        return min(1.0, max(0.0, (progress - gate_p) / ramp))
+
+    def note_mae_cos(self, mae_cos: float) -> None:
+        """Update mae/cos EMA after a training step (feeds next step's gate)."""
+        if self.cfg.s4_cosine_level <= 0.0:
+            return
+        d = self.cfg.s4_cosine_ema_decay
+        val = float(mae_cos)
+        if self._mae_cos_ema is None:
+            self._mae_cos_ema = val
+        else:
+            self._mae_cos_ema = d * self._mae_cos_ema + (1.0 - d) * val
+
+    def _apply_sigreg_cos_gate(
+            self, betas: List[float], step: int, total_steps: int) -> List[float]:
+        self._last_schedule_betas = list(betas)
+        gate = self._update_sigreg_cos_gate(step, total_steps)
+        self._last_sigreg_cos_gate = gate
+        if gate == 1.0 or self.cfg.s4_cosine_level <= 0.0:
+            return betas
+        s4 = self.num_stages - 1
+        out = list(betas)
+        out[s4] = out[s4] * gate
+        return out
+
     def _resolve_training_knobs(
             self, step: int, total_steps: int,
             epoch: Optional[int] = None) -> Tuple[List[float], List[float], float]:
-        """Return ``(active, beta_sig, progress)`` for this step."""
+        """Return ``(active, beta_sig, pred_active, progress)`` for this step."""
         if self.schedule is not None:
             self._sync_freeze_from_schedule(step, total_steps)
             state = self.schedule.at(step, total_steps, self._steps_per_epoch)
             active = [state.stages[self._stage_key(s)].active
                       for s in range(self.num_stages)]
+            pred_active = [state.stages[self._stage_key(s)].pred_active
+                           for s in range(self.num_stages)]
             betas = [state.stages[self._stage_key(s)].beta_sig
                      for s in range(self.num_stages)]
-            return active, betas, state.progress
+            betas = self._apply_sigreg_cos_gate(betas, step, total_steps)
+            return active, betas, pred_active, state.progress
         if epoch is not None:
             self.apply_freeze_schedule(epoch)
         active = stage_active_schedule(
@@ -301,7 +392,8 @@ class SwinMSJEPA(nn.Module):
             stage_curriculum=self.cfg.stage_curriculum,
             coarse_ramp_stages=self.cfg.coarse_ramp_stages)
         progress = float(step) / max(1, total_steps)
-        return active, list(self.cfg.beta_sig), progress
+        betas = self._apply_sigreg_cos_gate(list(self.cfg.beta_sig), step, total_steps)
+        return active, betas, list(active), progress
 
     @property
     def stage_keys(self) -> List[str]:
@@ -314,6 +406,37 @@ class SwinMSJEPA(nn.Module):
     def set_augment(self, fn: Callable) -> None:
         self.augment = fn
 
+    @staticmethod
+    def _split_dual_views(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if x.dim() == 5:
+            if x.shape[1] < 2:
+                raise ValueError(
+                    f"dual_view requires >= 2 views in [B, V, C, H, W], got V={x.shape[1]}")
+            return x[:, 0], x[:, 1]
+        raise ValueError(
+            "dual_view integrated mode expects [B, V, C, H, W] with V >= 2")
+
+    @staticmethod
+    def _split_dual_fg(fg_px: Optional[torch.Tensor]
+                       ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        if fg_px is None:
+            return None, None
+        if fg_px.dim() == 5:
+            if fg_px.shape[1] < 2:
+                raise ValueError(
+                    f"dual_view FG expects [B, V, 1, H, W] with V >= 2, got V={fg_px.shape[1]}")
+            return fg_px[:, 0], fg_px[:, 1]
+        return fg_px, fg_px
+
+    def _fg_from_px(self, fg_px: Optional[torch.Tensor]
+                    ) -> Tuple[Optional[Dict[str, torch.Tensor]], Optional[torch.Tensor]]:
+        if not self.cfg.foreground_mask or fg_px is None:
+            return None, None
+        if fg_px.dim() == 5:
+            fg_px = fg_px[:, 0]
+        fg_stages = build_fg_stages(fg_px, self.grids, self.cfg.fg_coverage)
+        return fg_stages, ~fg_stages["s1"]
+
     # -- core training objective --------------------------------------------
     def compute_loss(self, x: torch.Tensor, fg_px: Optional[torch.Tensor] = None,
                      step: int = 0, total_steps: int = 1, epoch: Optional[int] = None):
@@ -324,17 +447,13 @@ class SwinMSJEPA(nn.Module):
 
     def _shared_forward(self, x: torch.Tensor, fg_px: Optional[torch.Tensor],
                         grad_active: List[bool]):
-        """Augment, masks, FG stages, target + student latents."""
+        """Augment, masks, FG stages, target + student latents (single-view path)."""
+        if x.dim() == 5:
+            x = x[:, 0]
         x_aug = self.augment(x)
         b = x_aug.shape[0]
 
-        fg_stages: Optional[Dict[str, torch.Tensor]] = None
-        bg1 = None
-        if self.cfg.foreground_mask and fg_px is not None:
-            if fg_px.dim() == 5:
-                fg_px = fg_px[:, 0]
-            fg_stages = build_fg_stages(fg_px, self.grids, self.cfg.fg_coverage)
-            bg1 = ~fg_stages["s1"]
+        fg_stages, bg1 = self._fg_from_px(fg_px)
 
         mask = self.mask_gen.generate(b, device=x_aug.device,
                                       fg_s1=fg_stages["s1"] if fg_stages else None)
@@ -355,13 +474,47 @@ class SwinMSJEPA(nn.Module):
         E_ctx = self._detach_inactive_latents(E_ctx, grad_active)
         return x_aug, mask, fg_stages, E_full, E_ctx
 
+    def _shared_forward_integrated(
+            self, x_student: torch.Tensor, x_teacher: torch.Tensor,
+            fg_student: Optional[torch.Tensor],
+            fg_teacher: Optional[torch.Tensor],
+            grad_active: List[bool],
+    ) -> Tuple[Dict[str, torch.Tensor], Optional[Dict[str, torch.Tensor]],
+               Optional[Dict[str, torch.Tensor]], Dict[str, torch.Tensor],
+               Dict[str, torch.Tensor]]:
+        """Dual-view forward: masked student + stop-grad teacher latents."""
+        b = x_student.shape[0]
+        fg_stages, bg1 = self._fg_from_px(fg_student)
+        fg_teacher_stages, bg1_teacher = self._fg_from_px(fg_teacher)
+
+        mask = self.mask_gen.generate(b, device=x_student.device,
+                                      fg_s1=fg_stages["s1"] if fg_stages else None)
+        if self.check_masks:
+            assert_mask_consistency(mask, self.num_stages)
+        if fg_stages is not None:
+            for s in range(self.num_stages):
+                key = f"s{s + 1}"
+                if (mask[key] & ~fg_stages[key]).any():
+                    raise AssertionError(
+                        f"masked positions at {key} must lie inside the FOV.")
+
+        with torch.no_grad():
+            E_teacher = _project_latent(
+                self.backbone(x_teacher, mask1=None, bg1=bg1_teacher), self.lateral)
+
+        E_ctx = _project_latent(
+            self.backbone(x_student, mask1=mask["s1"], bg1=bg1), self.lateral)
+        E_ctx = self._detach_inactive_latents(E_ctx, grad_active)
+        return mask, fg_stages, fg_teacher_stages, E_teacher, E_ctx
+
     def _compute_loss_legacy(self, x: torch.Tensor, fg_px: Optional[torch.Tensor],
                              step: int, total_steps: int, *,
                              epoch: Optional[int] = None):
-        active, betas, progress = self._resolve_training_knobs(
+        active, betas, pred_active, progress = self._resolve_training_knobs(
             step, total_steps, epoch=epoch)
         bases = [float(self.cfg.stage_base_weights[s]) for s in range(self.num_stages)]
-        pred_w, sig_w = self._stage_loss_weights(active, betas, bases)
+        pred_w, sig_w = self._stage_loss_weights(
+            active, betas, bases, pred_active=pred_active)
         grad_active = self._stage_grad_flags(pred_w, sig_w)
         x_aug, mask, fg_stages, E_full, E_ctx = self._shared_forward(
             x, fg_px, grad_active)
@@ -419,49 +572,265 @@ class SwinMSJEPA(nn.Module):
         logs.update(stage_feature_diagnostics(E_full))
         return loss, logs
 
+    def _s4_mae_mask(self, mask: Dict[str, torch.Tensor],
+                     fg_stages: Optional[Dict[str, torch.Tensor]]) -> torch.Tensor:
+        m = mask["s4"]
+        if fg_stages is not None:
+            m = m & fg_stages["s4"]
+        return m
+
+    def _build_s4_coarse_field(
+            self, E_ctx: Dict[str, torch.Tensor], mask: Dict[str, torch.Tensor],
+            fg_stages: Optional[Dict[str, torch.Tensor]], grad_active_s4: bool,
+            pred_all: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> Tuple[torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
+        """Assemble full-grid C4 for pyramid MAE / SIGReg / probe."""
+        if self.cfg.coarse_mim_mode in ("cross_attn", "integrated"):
+            if pred_all is None:
+                if self.cfg.coarse_mim_mode == "integrated":
+                    pred_all = self.fusion(E_ctx, mask, fg_stages=fg_stages)
+                else:
+                    pred_all = self.predictor(E_ctx, mask, fg_stages=fg_stages)
+            pred_s4 = pred_all["s4"]
+            ctx = E_ctx["s4"] if grad_active_s4 else E_ctx["s4"].detach()
+            if not grad_active_s4:
+                pred_s4 = pred_s4.detach()
+            C4 = assemble_coarse_field(ctx, pred_s4, mask["s4"])
+        else:
+            if grad_active_s4:
+                C4 = self.coarse_head(E_ctx["s4"])
+            else:
+                C4 = self.coarse_head(E_ctx["s4"]).detach()
+        if fg_stages is not None:
+            C4 = fg_gate(C4, fg_stages["s4"])
+        return C4, pred_all
+
     def _compute_loss_pyramid(self, x: torch.Tensor, fg_px: Optional[torch.Tensor],
                               step: int, total_steps: int, *,
                               epoch: Optional[int] = None):
-        active, betas, progress = self._resolve_training_knobs(
+        if self.cfg.coarse_mim_mode == "integrated":
+            return self._compute_loss_pyramid_integrated(
+                x, fg_px, step, total_steps, epoch=epoch)
+        return self._compute_loss_pyramid_legacy(
+            x, fg_px, step, total_steps, epoch=epoch)
+
+    def _compute_loss_pyramid_integrated(
+            self, x: torch.Tensor, fg_px: Optional[torch.Tensor],
+            step: int, total_steps: int, *, epoch: Optional[int] = None):
+        active, betas, pred_active, progress = self._resolve_training_knobs(
             step, total_steps, epoch=epoch)
         bases = [float(self.cfg.stage_base_weights[s]) for s in range(self.num_stages)]
-        pred_w, sig_w = self._stage_loss_weights(active, betas, bases)
+        pred_w, sig_w = self._stage_loss_weights(
+            active, betas, bases, pred_active=pred_active)
+        grad_active = self._stage_grad_flags(pred_w, sig_w)
+
+        x_student, x_teacher = self._split_dual_views(x)
+        fg_student, fg_teacher = self._split_dual_fg(fg_px)
+        mask, fg_stages, fg_teacher_stages, E_teacher, E_ctx = (
+            self._shared_forward_integrated(
+                x_student, x_teacher, fg_student, fg_teacher, grad_active))
+
+        need_pred = any(w > 0.0 for w in pred_w)
+        pred_all: Optional[Dict[str, torch.Tensor]] = None
+        if need_pred:
+            pred_all = self.fusion(E_ctx, mask, fg_stages=fg_stages)
+
+        E_hat: Dict[str, torch.Tensor] = {}
+        if pred_all is not None:
+            for s in range(self.num_stages):
+                key = self._stage_key(s)
+                if pred_w[s] > 0.0 and not self.stage_frozen(s):
+                    E_hat[key] = scatter_masked(E_ctx[key], pred_all[key], mask[key])
+                else:
+                    E_hat[key] = E_ctx[key]
+        else:
+            E_hat = {k: E_ctx[k] for k in E_ctx}
+
+        s4 = self.num_stages - 1
+        if pred_all is not None and pred_w[s4] > 0.0 and not self.stage_frozen(s4):
+            C4_hat = assemble_coarse_field(E_ctx["s4"], pred_all["s4"], mask["s4"])
+        elif grad_active[s4]:
+            C4_hat = E_ctx["s4"]
+        else:
+            C4_hat = E_ctx["s4"].detach()
+        if fg_stages is not None:
+            C4_hat = fg_gate(C4_hat, fg_stages["s4"])
+
+        C4_teacher = E_teacher["s4"]
+        if fg_teacher_stages is not None:
+            C4_teacher = fg_gate(C4_teacher, fg_teacher_stages["s4"])
+
+        align = self._residual_align_for_pyramid()
+        bands_S = pyramid_sigreg_features(
+            E_hat, C4_hat, self.grids, fg_stages,
+            strict_laplacian=self.cfg.strict_laplacian,
+            s4_on=self.cfg.sigreg_s4_on,
+            residual_align=align)
+        bands_T = pyramid_sigreg_features(
+            E_teacher, C4_teacher, self.grids, fg_teacher_stages,
+            strict_laplacian=self.cfg.strict_laplacian,
+            s4_on=self.cfg.sigreg_s4_on,
+            residual_align=align)
+        bands_T_norm = {
+            k: stage_target_norm(v, self.cfg.target_norm).detach()
+            for k, v in bands_T.items()}
+
+        lambdas = self._zero_frozen_lambdas(list(pred_w))
+        mae_cos = 0.0
+        if need_pred and any(w > 0.0 for w in lambdas):
+            pred_bands = {
+                k: gather_masked(bands_S[k], mask[k]) for k in bands_S}
+            l_pred, per_stage_pred = masked_prediction_loss(
+                pred_bands, bands_T_norm, mask, lambdas, self.cfg.pred_loss,
+                self.cfg.smooth_l1_beta)
+            if pred_bands["s4"].numel() > 0:
+                tgt_s4 = gather_masked(bands_T_norm["s4"], mask["s4"])
+                mae_cos = float(
+                    F.cosine_similarity(
+                        pred_bands["s4"], tgt_s4.to(pred_bands["s4"].dtype), dim=-1
+                    ).mean().detach())
+        else:
+            l_pred = x_student.new_zeros(())
+            per_stage_pred = {self._stage_key(s): 0.0 for s in range(self.num_stages)}
+
+        sched_betas = getattr(self, "_last_schedule_betas", betas)
+        need_sig_probe = (
+            self.cfg.s4_cosine_level > 0.0 and sched_betas[s4] > 0.0)
+        need_sig_bands = (
+            any(sig_w[s] > 0.0 for s in range(self.num_stages)) or need_sig_probe)
+
+        scales = self.cfg.stage_scale(self.lat_chans)
+        l_sig = x_student.new_zeros(())
+        per_stage_sig: Dict[str, float] = {}
+        per_stage_sig_raw: Dict[str, float] = {}
+        if need_sig_bands:
+            sig_feats = bands_S
+            for s in range(self.num_stages):
+                key = self._stage_key(s)
+                probe_s = (
+                    need_sig_probe and s == s4 and sched_betas[s] > 0.0)
+                if (sig_w[s] <= 0.0 and not probe_s) or not sig_feats:
+                    per_stage_sig[key] = 0.0
+                    continue
+                fg_s = fg_stages[key] if fg_stages is not None else None
+                if sig_w[s] > 0.0:
+                    sig_s = self.sigreg_r[s](sig_feats[key], fg_s)
+                    per_stage_sig[key] = float(sig_s.detach())
+                    per_stage_sig_raw[key] = per_stage_sig[key]
+                    l_sig = l_sig + sig_w[s] * scales[s] * sig_s
+                else:
+                    with torch.no_grad():
+                        sig_s = self.sigreg_r[s](sig_feats[key], fg_s)
+                    per_stage_sig[key] = 0.0
+                    per_stage_sig_raw[key] = float(sig_s.detach())
+
+        loss = l_pred + l_sig
+
+        logs = {"total": float(loss.detach()),
+                "l_pred": float(l_pred.detach()),
+                "l_sig": float(l_sig.detach()),
+                "l_mae": float(l_pred.detach()),
+                "mae/cos": mae_cos,
+                "schedule_progress": progress}
+        for s in range(self.num_stages):
+            key = self._stage_key(s)
+            logs[f"pred/{key}"] = per_stage_pred[key]
+            logs[f"mae/{key}"] = per_stage_pred[key]
+            logs[f"lambda/{key}"] = lambdas[s]
+            logs[f"sig/{key}"] = per_stage_sig.get(key, 0.0)
+            if key in per_stage_sig_raw:
+                logs[f"sig/raw/{key}"] = per_stage_sig_raw[key]
+        for s in range(self.num_stages):
+            key = self._stage_key(s)
+            logs[f"active/{key}"] = active[s]
+            if fg_stages is not None:
+                logs[f"fg_cov/{key}"] = float(fg_stages[key].float().mean())
+        logs.update(self._freeze_logs())
+        logs.update(stage_feature_diagnostics(E_ctx))
+        logs.update(stage_feature_diagnostics({"C4": C4_hat}))
+        if self.cfg.s4_cosine_level > 0.0:
+            logs["sigreg/cos_gate"] = self._last_sigreg_cos_gate
+            logs["sigreg/cos_ema"] = float(self._mae_cos_ema or 0.0)
+            logs["sigreg/cos_latched"] = float(self._sigreg_cos_latched)
+        return loss, logs
+
+    def _compute_loss_pyramid_legacy(self, x: torch.Tensor, fg_px: Optional[torch.Tensor],
+                              step: int, total_steps: int, *,
+                              epoch: Optional[int] = None):
+        active, betas, pred_active, progress = self._resolve_training_knobs(
+            step, total_steps, epoch=epoch)
+        bases = [float(self.cfg.stage_base_weights[s]) for s in range(self.num_stages)]
+        pred_w, sig_w = self._stage_loss_weights(
+            active, betas, bases, pred_active=pred_active)
         grad_active = self._stage_grad_flags(pred_w, sig_w)
         x_aug, mask, fg_stages, E_full, E_ctx = self._shared_forward(
             x, fg_px, grad_active)
 
         s4 = self.num_stages - 1
         mae_w = 0.0 if self.stage_frozen(s4) else pred_w[s4]
-        if grad_active[s4]:
-            C4 = self.coarse_head(E_ctx["s4"])
-        else:
-            C4 = self.coarse_head(E_ctx["s4"]).detach()
+        lambdas_res = self._zero_frozen_lambdas(list(pred_w[:s4]), residual=True)
+        need_s4_cross = (
+            mae_w > 0.0 and self.cfg.coarse_mim_mode == "cross_attn"
+            and self.predictor is not None)
+        need_pred = need_s4_cross or any(w > 0.0 for w in lambdas_res)
+        pred_all: Optional[Dict[str, torch.Tensor]] = None
+        if need_pred:
+            if self.predictor is not None:
+                pred_all = self.predictor(E_ctx, mask, fg_stages=fg_stages)
+            elif need_s4_cross:
+                raise RuntimeError(
+                    "coarse_mim_mode='cross_attn' requires a predictor module")
+
+        C4, _ = self._build_s4_coarse_field(
+            E_ctx, mask, fg_stages, grad_active[s4], pred_all=pred_all)
+
+        mae_cos = 0.0
         if mae_w > 0.0:
             t4 = E_full["s4"]
             if fg_stages is not None:
                 t4 = _fg_gate_feats({"s4": t4}, fg_stages)["s4"]
             T4 = stage_target_norm(t4, self.cfg.target_norm).detach()
-            l_mae = masked_coarse_mae(
-                C4, T4, mask["s4"], self.cfg.smooth_l1_beta,
-                fg_mask=fg_stages["s4"] if fg_stages is not None else None)
+            if self.cfg.coarse_mim_mode == "cross_attn":
+                mae_mask = self._s4_mae_mask(mask, fg_stages)
+                pred_s4 = pred_all["s4"]
+                tgt_m = gather_masked(T4, mae_mask)
+                l_mae = F.smooth_l1_loss(
+                    pred_s4, tgt_m.to(pred_s4.dtype),
+                    beta=self.cfg.smooth_l1_beta)
+                if pred_s4.numel() > 0:
+                    mae_cos = float(
+                        F.cosine_similarity(pred_s4, tgt_m, dim=-1).mean().detach())
+            else:
+                l_mae = masked_coarse_mae(
+                    C4, T4, mask["s4"], self.cfg.smooth_l1_beta,
+                    fg_mask=fg_stages["s4"] if fg_stages is not None else None)
         else:
             l_mae = x_aug.new_zeros(())
 
         need_residuals = any(
             pred_w[s] > 0.0 and not self.stage_frozen(s)
             for s in range(self.num_stages - 1))
-        need_sig_bands = any(sig_w[s] > 0.0 for s in range(self.num_stages))
+        sched_betas = getattr(self, "_last_schedule_betas", betas)
+        need_sig_probe = (
+            not self.cfg.legacy_jepa
+            and self.cfg.s4_cosine_level > 0.0
+            and sched_betas[s4] > 0.0)
+        need_sig_bands = (
+            any(sig_w[s] > 0.0 for s in range(self.num_stages))
+            or need_sig_probe)
         band_residuals: Dict[str, torch.Tensor] = {}
         sig_feats: Dict[str, torch.Tensor] = {}
         if need_residuals:
             band_residuals = pyramid_band_residuals(
                 E_full, C4, self.grids, fg_stages,
-                strict_laplacian=self.cfg.strict_laplacian)
+                strict_laplacian=self.cfg.strict_laplacian,
+                residual_align=self._residual_align_for_pyramid())
         if need_sig_bands:
             sig_feats = pyramid_sigreg_features(
                 E_full, C4, self.grids, fg_stages,
                 strict_laplacian=self.cfg.strict_laplacian,
-                s4_on=self.cfg.sigreg_s4_on)
+                s4_on=self.cfg.sigreg_s4_on,
+                residual_align=self._residual_align_for_pyramid())
         if need_residuals:
             residuals = {k: band_residuals[k] for k in _RESIDUAL_KEYS}
             R_tgt = {k: stage_target_norm(v, self.cfg.target_norm).detach()
@@ -470,11 +839,8 @@ class SwinMSJEPA(nn.Module):
             residuals = {}
             R_tgt = {}
 
-        lambdas_res = self._zero_frozen_lambdas(list(pred_w[:s4]), residual=True)
-        need_pred = any(w > 0.0 for w in lambdas_res)
-        if need_pred:
-            if self.predictor is not None:
-                pred_all = self.predictor(E_ctx, mask, fg_stages=fg_stages)
+        if any(w > 0.0 for w in lambdas_res):
+            if pred_all is not None:
                 pred = {k: pred_all[k] for k in _RESIDUAL_KEYS}
             else:
                 pred = {k: gather_masked(E_ctx[k], mask[k]) for k in _RESIDUAL_KEYS}
@@ -489,15 +855,25 @@ class SwinMSJEPA(nn.Module):
         scales = self.cfg.stage_scale(self.lat_chans)
         l_sig = x_aug.new_zeros(())
         per_stage_sig: Dict[str, float] = {}
+        per_stage_sig_raw: Dict[str, float] = {}
         for s in range(self.num_stages):
             key = self._stage_key(s)
-            if sig_w[s] <= 0.0 or not sig_feats:
+            probe_s = (
+                need_sig_probe and s == s4 and sched_betas[s] > 0.0 and sig_feats)
+            if (sig_w[s] <= 0.0 and not probe_s) or not sig_feats:
                 per_stage_sig[key] = 0.0
                 continue
             fg_s = fg_stages[key] if fg_stages is not None else None
-            sig_s = self.sigreg_r[s](sig_feats[key], fg_s)
-            per_stage_sig[key] = float(sig_s.detach())
-            l_sig = l_sig + sig_w[s] * scales[s] * sig_s
+            if sig_w[s] > 0.0:
+                sig_s = self.sigreg_r[s](sig_feats[key], fg_s)
+                per_stage_sig[key] = float(sig_s.detach())
+                per_stage_sig_raw[key] = per_stage_sig[key]
+                l_sig = l_sig + sig_w[s] * scales[s] * sig_s
+            else:
+                with torch.no_grad():
+                    sig_s = self.sigreg_r[s](sig_feats[key], fg_s)
+                per_stage_sig[key] = 0.0
+                per_stage_sig_raw[key] = float(sig_s.detach())
 
         loss = mae_w * l_mae + l_pred + l_sig
 
@@ -506,6 +882,7 @@ class SwinMSJEPA(nn.Module):
                 "l_sig": float(l_sig.detach()),
                 "l_mae": float(l_mae.detach()),
                 "mae/s4": float(l_mae.detach()),
+                "mae/cos": mae_cos,
                 "schedule_progress": progress}
         for key in _RESIDUAL_KEYS:
             logs[f"pred/{key}"] = per_stage_pred[key]
@@ -514,6 +891,8 @@ class SwinMSJEPA(nn.Module):
         for s in range(self.num_stages):
             key = self._stage_key(s)
             logs[f"sig/{key}"] = per_stage_sig[key]
+            if key in per_stage_sig_raw:
+                logs[f"sig/raw/{key}"] = per_stage_sig_raw[key]
         logs["lambda/s4"] = mae_w
         for s in range(self.num_stages):
             key = f"s{s + 1}"
@@ -523,6 +902,10 @@ class SwinMSJEPA(nn.Module):
         logs.update(self._freeze_logs())
         logs.update(stage_feature_diagnostics(E_full))
         logs.update(stage_feature_diagnostics({"C4": C4}))
+        if self.cfg.s4_cosine_level > 0.0:
+            logs["sigreg/cos_gate"] = self._last_sigreg_cos_gate
+            logs["sigreg/cos_ema"] = float(self._mae_cos_ema or 0.0)
+            logs["sigreg/cos_latched"] = float(self._sigreg_cos_latched)
         return loss, logs
 
     @torch.no_grad()
@@ -545,22 +928,35 @@ class SwinMSJEPA(nn.Module):
         E_full = _project_latent(self.backbone(x, mask1=None, bg1=bg1), self.lateral)
         E_ctx = _project_latent(
             self.backbone(x, mask1=mask["s1"], bg1=bg1), self.lateral)
-        C4 = self.coarse_head(E_ctx["s4"])
+        pred_all = None
+        if self.cfg.coarse_mim_mode == "integrated" and self.fusion is not None:
+            pred_all = self.fusion(E_ctx, mask, fg_stages=fg_stages)
+        elif self.cfg.coarse_mim_mode == "cross_attn" and self.predictor is not None:
+            pred_all = self.predictor(E_ctx, mask, fg_stages=fg_stages)
+        C4, _ = self._build_s4_coarse_field(
+            E_ctx, mask, fg_stages, grad_active_s4=True, pred_all=pred_all)
+        t4 = E_full["s4"]
         if fg_stages is not None:
-            C4 = fg_gate(C4, fg_stages["s4"])
+            t4 = _fg_gate_feats({"s4": t4}, fg_stages)["s4"]
+        T4 = stage_target_norm(t4, self.cfg.target_norm)
         R = hierarchical_residuals(
             E_full, C4, self.grids, fg_stages,
-            strict_laplacian=self.cfg.strict_laplacian)
+            strict_laplacian=self.cfg.strict_laplacian,
+            residual_align=self._residual_align_for_pyramid())
         E_hat = reconstruct_from_residuals(
             C4, R, E_full, self.grids,
-            strict_laplacian=self.cfg.strict_laplacian)
+            strict_laplacian=self.cfg.strict_laplacian,
+            residual_align=self._residual_align_for_pyramid())
         if was_training:
             self.train()
-        return {"C4": {"s4": C4}, "R": R, "E": E_full, "E_hat": E_hat}
+        return {"C4": {"s4": C4}, "T4": {"s4": T4}, "R": R, "E": E_full,
+                "E_hat": E_hat}
 
     def training_step(self, batch, step: int = 0, total_steps: int = 1):
         """Design §5 entry point: ``training_step(batch) -> dict(loss, logs)``."""
-        x = extract_images(batch)
+        dual = (self.cfg.dual_view and self.cfg.coarse_mim_mode == "integrated"
+                and not self.cfg.legacy_jepa)
+        x = extract_images(batch, dual_view=dual)
         fg = extract_fg_masks(batch)
         loss, logs = self.compute_loss(x, fg_px=fg, step=step, total_steps=total_steps)
         return {"loss": loss, "logs": logs}
@@ -608,15 +1004,15 @@ def extract_fg_masks(batch) -> Optional[torch.Tensor]:
     return fg
 
 
-def extract_images(batch) -> torch.Tensor:
+def extract_images(batch, dual_view: bool = False) -> torch.Tensor:
     """Pull the image tensor out of the repo's batch format.
 
     ``TomographyDataset`` yields ``(views, label)`` where ``views`` is
-    ``[B, V, C, H, W]`` (or ``[B, C, H, W]`` for a single view). This consumes
-    images only -- the first view is used.
+    ``[B, V, C, H, W]`` (or ``[B, C, H, W]`` for a single view). When
+    ``dual_view=False``, only the first view is returned.
     """
     x = batch[0] if isinstance(batch, (tuple, list)) else batch
-    if x.dim() == 5:           # [B, V, C, H, W] -> first view
+    if x.dim() == 5 and not dual_view:
         x = x[:, 0]
     return x
 
@@ -669,7 +1065,8 @@ class SwinMSEncoder(nn.Module):
         self.backbone = SwinMultiScaleBackbone(
             model_name=cfg.backbone_name, img_size=cfg.img_size,
             in_chans=cfg.in_chans, pretrained=False, drop_path_rate=0.0,
-            use_rope=cfg.use_rope, rope_theta=cfg.rope_theta)
+            use_rope=cfg.use_rope, rope_theta=cfg.rope_theta,
+            embed_dim=cfg.backbone_embed_dim)
         self.lat_chans: List[int] = list(cfg.lat_dims)
         self.lateral = None
         if with_lateral:
